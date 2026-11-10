@@ -232,21 +232,6 @@ extension AppModel {
     }
 
     /// 单个账号签到：`POST /api/accounts/checkin {id}`
-    func checkinAccount(_ id: String) async {
-        do {
-            _ = try await authenticatedRequest("POST", "/api/accounts/checkin", body: ["id": id], timeout: 60)
-            toast = Toast(text: "已提交签到", kind: .success)
-            haptic(.medium)
-            await loadAccounts()
-        } catch {
-            let apiError = error as? PanelAPIError
-            toast = Toast(
-                text: "签到失败：\(apiError?.errorDescription ?? error.localizedDescription)",
-                kind: .error
-            )
-        }
-    }
-
     func refreshAccountToken(_ id: String) async {
         do {
             _ = try await authenticatedRequest("POST", "/api/accounts/refresh", body: ["id": id], timeout: 60)
