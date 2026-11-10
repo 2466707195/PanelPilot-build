@@ -1,0 +1,1754 @@
+import Foundation
+import SwiftUI
+import Combine
+import UIKit
+
+struct Toast: Identifiable, Equatable {
+    enum Kind { case info, success, warning, error }
+    let id = UUID()
+    var text: String
+    var kind: Kind = .info
+}
+
+/// 一个区块的数据快照。失败时保留上一份成功结果，只把错误挂出来。
+struct SectionData: Equatable {
+    var json: JSONValue?
+    var error: String?
+    var fetchedAt: Date?
+    var latency: Int?
+    var loading: Bool = false
+
+    var hasValue: Bool { json != nil }
+}
+
+/// 更新检查结果（`GET /api/update/check?current=`）。
+struct UpdateCheckInfo: Equatable {
+    var currentVersion: String?
+    var latestVersion: String?
+    var hasUpdate: Bool?
+    var forced: Bool = false
+    var notes: String?
+    var pageURL: String?
+    var publishedAt: String?
+    var checkedAt: Date = Date()
+
+    /// 文案：有新版本 / 已是最新 / 说不清
+    var title: String {
+        if hasUpdate == true { return "有新版本 \(latestVersion ?? "")" }
+        if hasUpdate == false { return "已是最新版本" }
+        return "已检查，服务端没给出结论"
+    }
+}
+
+/// 助手对话里的一条消息。
+struct ChatMessage: Identifiable, Equatable {
+    enum Role: String { case user, assistant }
+    let id: UUID
+    var role: Role
+    var text: String
+    var at: Date
+
+    init(id: UUID = UUID(), role: Role, text: String, at: Date = Date()) {
+        self.id = id
+        self.role = role
+        self.text = text
+        self.at = at
+    }
+}
+
+/// 全局状态机：连接配置、登录态、目录驱动的数据缓存、动作执行、助手对话。
+///
+/// 一句话原则：**界面永远显示「最后一次真实拿到的数据」+「这次为什么没拿到」**。
+/// 所有区块都按 `PanelCatalog` 的声明去取数，界面本身不认识业务字段，
+/// 因此服务器换字段只会让某个值显示成「—」，不会整页白屏。
+@MainActor
+final class AppModel: ObservableObject {
+
+    // MARK: - 配置
+
+    @Published private(set) var profiles: [PanelProfile] = []
+    @Published private(set) var activeID: UUID?
+
+    // MARK: - 连接
+
+    @Published private(set) var state: LinkState = .idle
+    @Published private(set) var health: PanelHealth?
+    @Published private(set) var latency: Int?
+    @Published private(set) var lastChecked: Date?
+    @Published private(set) var lastError: String?
+    @Published private(set) var errorHint: String?
+    @Published private(set) var needsLogin = false
+
+    // MARK: - 目录数据
+
+    /// pageID -> sectionID -> 快照
+    @Published private(set) var store: [String: [String: SectionData]] = [:]
+    /// 折叠区块的展开状态：`pageID/sectionID`
+    @Published private(set) var expanded: Set<String> = []
+
+    // MARK: - 概览仪表盘（本地优先）
+
+    /// 当前统计区间：`today / yesterday / 7 / 30`
+    @Published private(set) var statsRange: String = "7"
+    /// 四个区间的统计快照：同步时一次拉齐，切区间只在本地取，不发请求
+    @Published private(set) var statsByRange: [String: PanelStatsSummary] = [:]
+    /// 当前区间（本地取）
+    var stats: PanelStatsSummary? { statsByRange[statsRange] }
+    @Published private(set) var statsError: String?
+    @Published private(set) var statsLoading = false
+    @Published private(set) var statsUpdatedAt: Date?
+    /// 当前展示的是不是磁盘快照（而不是刚同步回来的）
+    @Published private(set) var statsFromSnapshot = false
+    /// 磁盘快照里最新一份的时间
+    @Published private(set) var statsSnapshotAt: Date?
+    /// 仪表盘周边数据：accounts / panel / queue / checkin / requests
+    @Published private(set) var dashboard: [String: JSONValue] = [:]
+
+    // MARK: - 本地引擎计量（证明交互没有偷偷发请求）
+
+    /// 本次运行真正发出去的网络请求数
+    @Published private(set) var networkRequestCount = 0
+    /// 本次运行在本地完成的计算 / 渲染次数
+    @Published private(set) var localComputeCount = 0
+    /// 本地快照条目数
+    @Published private(set) var vaultEntryCount = 0
+    @Published private(set) var vaultNewest: Date?
+
+    // MARK: - Agent 配置
+
+    @Published private(set) var agents: [AgentClient] = []
+    /// 实际命中的报文形状，例如 `clients`、`data.clients`
+    @Published private(set) var agentsShape: String = ""
+    /// 解析不出来时的人话（含实际字段名）
+    @Published private(set) var agentsProblem: String?
+    @Published private(set) var agentsError: String?
+    @Published private(set) var agentsLoading = false
+    @Published private(set) var agentsUpdatedAt: Date?
+    @Published private(set) var agentsFromSnapshot = false
+    /// 恢复预览（含 diff 与一次性令牌）
+    @Published private(set) var agentPreview: AgentPreview?
+    @Published private(set) var agentPreviewClient: AgentClient?
+    @Published private(set) var agentWorkingID: String?
+    /// clientId -> `/api/agents/{id}/resources` 的原始返回
+    @Published private(set) var agentResources: [String: JSONValue] = [:]
+
+    // MARK: - 路由工作区（可视化配置）
+
+    @Published var routing: RoutingWorkspace = .empty
+    @Published var routingDraft = RoutingDraft(workspace: .empty)
+    /// 当前编辑的模型；空字符串 = 全局默认
+    @Published var routingModel: String = ""
+    @Published var routingLoading = false
+    @Published var routingSaving = false
+    @Published var routingError: String?
+    @Published var routingUpdatedAt: Date?
+    @Published var routingModels: [String] = []
+
+    // MARK: - 账号（按提供商分组）
+
+    @Published var providers: [AccountProvider] = []
+    @Published var accountsLoading = false
+    @Published var accountsError: String?
+    @Published var accountsUpdatedAt: Date?
+    @Published var balances: JSONValue?
+    @Published var balancesLoading = false
+    @Published var currentAccountID: String?
+
+    // MARK: - 助手输入框
+
+    @Published var assistantModels: [String] = []
+    @Published var attachments: [ChatAttachment] = []
+    @Published var assistantAccess: AssistantAccess = .full
+    /// 网关 Key（助手聊天必须带一把可用的，否则面板会回「所选 API Key 已失效」）
+    @Published var gatewayKeys: [GatewayKey] = []
+    @Published var assistantKeyID: String = UserDefaults.standard.string(forKey: "panel.assistantKey") ?? "" {
+        didSet { UserDefaults.standard.set(assistantKeyID, forKey: "panel.assistantKey") }
+    }
+
+    // MARK: - 添加账号流程（网页登录 / 手机号 / 导入）
+
+    @Published var loginMethods: [LoginMethod] = []
+    @Published var loginBusy = false
+    @Published var loginMessage: String?
+    @Published var loginError: String?
+    @Published var loginURL: String?
+    /// 面板给的中间态：网页登录的 state、短信登录的 deviceId/msgid/uuid
+    @Published var loginState = ""
+    @Published var smsDeviceID = ""
+
+    // MARK: - 偏好
+
+    /// 启动落在哪一栏：`overview / routing / agent / accounts / settings`
+    @Published var startTab: String = UserDefaults.standard.string(forKey: "panel.startTab") ?? "overview" {
+        didSet { UserDefaults.standard.set(startTab, forKey: "panel.startTab") }
+    }
+    /// 图表动画（关掉之后柱子和扇区直接落到终值）
+    @Published var chartAnimation: Bool = UserDefaults.standard.object(forKey: "panel.chartAnimation") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(chartAnimation, forKey: "panel.chartAnimation") }
+    }
+    /// 触感反馈
+    @Published var hapticsEnabled: Bool = UserDefaults.standard.object(forKey: "panel.haptics") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(hapticsEnabled, forKey: "panel.haptics") }
+    }
+    /// 数字用紧凑写法（1.2万 / 1.2k）还是完整写法
+    @Published var compactNumbers: Bool = UserDefaults.standard.object(forKey: "panel.compactNumbers") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(compactNumbers, forKey: "panel.compactNumbers") }
+    }
+
+    // MARK: - 诊断 / 事件
+
+    @Published private(set) var diagSteps: [DiagStep] = []
+    @Published private(set) var isDiagnosing = false
+    @Published private(set) var events: [PanelEvent] = []
+
+    // MARK: - 服务端信息 / 更新
+
+    /// 系统信息里的路径是否把主目录/用户名缩写（面板支持 `?hideUsername=1`）
+    @Published private(set) var hideUsername: Bool =
+        UserDefaults.standard.bool(forKey: "panel.hideUsername.v1")
+    @Published private(set) var updateChecking = false
+    @Published private(set) var updateInfo: UpdateCheckInfo?
+    @Published private(set) var updateError: String?
+
+    // MARK: - 助手
+
+    @Published private(set) var chat: [ChatMessage] = []
+    @Published private(set) var isReplying = false
+    @Published private(set) var activeSessionID: String?
+    @Published var assistantModel: String = ""
+
+    // MARK: - 全局
+
+    @Published var toast: Toast?
+    @Published var autoRefresh: Bool = UserDefaults.standard.object(forKey: "panel.autoRefresh") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(autoRefresh, forKey: "panel.autoRefresh") }
+    }
+
+    let network = NetworkWatcher()
+
+    // MARK: - 私有
+
+    private var pollTask: Task<Void, Never>?
+    private var pollTick = 0
+    private var chatTask: Task<Void, Never>?
+    private var bag = Set<AnyCancellable>()
+    private let profilesKey = "panel.profiles.v1"
+    private let activeKey = "panel.activeProfile.v1"
+
+    /// 单飞登录：并发请求同时遇到 401 时，只会真正登录一次
+    private var loginTask: Task<Bool, Never>?
+    /// 每次换到新令牌自增，用来判断「这枚令牌是不是我这次请求用的那枚」
+    private var sessionGeneration = 0
+    /// 上一次登录被面板拒绝的时间（避免被拒后每拍都再撞一次）
+    private var lastRejectionAt: Date?
+    /// 仪表盘加载序号：只接受最新一次的结果
+    private var dashboardToken = 0
+
+    init() {
+        loadProfiles()
+        network.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &bag)
+
+        // 冷启动先把磁盘快照铺满界面：这一步不依赖任何网络。
+        if let id = activeID {
+            LocalVault.shared.load(profile: id)
+            refreshVaultStats(profile: id)
+            seedDashboard(profile: id)
+            seedAgents(profile: id)
+            seedAllPages(profile: id)
+        }
+
+        if activeProfile != nil {
+            Task { await connect() }
+        }
+        startPolling()
+    }
+
+    // MARK: - 配置读写
+
+    var activeProfile: PanelProfile? {
+        guard let activeID else { return nil }
+        return profiles.first { $0.id == activeID }
+    }
+
+    var isConfigured: Bool { activeProfile?.isValid == true }
+
+    var activeToken: String {
+        guard let id = activeID else { return "" }
+        return KeychainStore.get(KeychainStore.panelTokenKey(for: id)) ?? ""
+    }
+
+    var activeAPIKey: String {
+        guard let id = activeID else { return "" }
+        return KeychainStore.get(KeychainStore.apiKeyKey(for: id)) ?? ""
+    }
+
+    var activePassword: String {
+        guard let id = activeID else { return "" }
+        return KeychainStore.get(KeychainStore.panelPasswordKey(for: id)) ?? ""
+    }
+
+    var activeRefreshToken: String {
+        guard let id = activeID else { return "" }
+        return KeychainStore.get(KeychainStore.panelRefreshKey(for: id)) ?? ""
+    }
+
+    var hasToken: Bool { !activeToken.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    var authBadge: (text: String, ok: Bool) {
+        switch activeProfile?.authMode {
+        case .password:
+            return needsLogin ? ("未登录", false) : ("已登录", true)
+        case .token:
+            return hasToken ? ("令牌已存", true) : ("未填令牌", false)
+        case .none:
+            return ("未配置", false)
+        }
+    }
+
+    var authFixTitle: String { activeProfile?.authMode == .password ? "去登录" : "去填令牌" }
+
+    var authFixNote: String {
+        activeProfile?.authMode == .password
+            ? "账号密码登录失效了。去设置里补一次管理员密码，App 会自己重新登录。"
+            : "这个连接走的是面板令牌。把面板网页里的 x-panel-token 复制到设置里。"
+    }
+
+    var isAuthorized: Bool {
+        if activeProfile?.authMode == .password { return !needsLogin }
+        return hasToken
+    }
+
+    func token(for id: UUID) -> String {
+        KeychainStore.get(KeychainStore.panelTokenKey(for: id)) ?? ""
+    }
+
+    func apiKey(for id: UUID) -> String {
+        KeychainStore.get(KeychainStore.apiKeyKey(for: id)) ?? ""
+    }
+
+    func password(for id: UUID) -> String {
+        KeychainStore.get(KeychainStore.panelPasswordKey(for: id)) ?? ""
+    }
+
+    func refreshToken(for id: UUID) -> String {
+        KeychainStore.get(KeychainStore.panelRefreshKey(for: id)) ?? ""
+    }
+
+    /// 新建或更新。token / apiKey / password 传 nil 表示「不改」。
+    func save(profile: PanelProfile, token: String?, apiKey: String?, password: String? = nil) {
+        var list = profiles
+        if let index = list.firstIndex(where: { $0.id == profile.id }) {
+            list[index] = profile
+        } else {
+            list.append(profile)
+        }
+        profiles = list
+
+        if let token { KeychainStore.set(token, for: KeychainStore.panelTokenKey(for: profile.id)) }
+        if let apiKey { KeychainStore.set(apiKey, for: KeychainStore.apiKeyKey(for: profile.id)) }
+        if let password {
+            KeychainStore.set(password, for: KeychainStore.panelPasswordKey(for: profile.id))
+            // 换了密码就把旧令牌与旧刷新令牌一起作废，逼下一次重新登录
+            KeychainStore.delete(KeychainStore.panelTokenKey(for: profile.id))
+            KeychainStore.delete(KeychainStore.panelRefreshKey(for: profile.id))
+            UserDefaults.standard.removeObject(forKey: tokenExpiryKey(for: profile.id))
+        }
+
+        if activeID == nil { activeID = profile.id }
+        persistProfiles()
+        objectWillChange.send()
+    }
+
+    func activate(_ id: UUID) {
+        guard activeID != id else {
+            Task { await connect() }
+            return
+        }
+        activeID = id
+        UserDefaults.standard.set(id.uuidString, forKey: activeKey)
+        resetRuntimeState()
+        persistProfiles()
+        // 换到另一台面板：先把它自己的本地快照铺上来，再谈连接
+        LocalVault.shared.load(profile: id)
+        refreshVaultStats(profile: id)
+        seedDashboard(profile: id)
+        seedAgents(profile: id)
+        seedAllPages(profile: id)
+        Task { await connect() }
+    }
+
+    func delete(_ id: UUID) {
+        profiles.removeAll { $0.id == id }
+        KeychainStore.delete(KeychainStore.panelTokenKey(for: id))
+        KeychainStore.delete(KeychainStore.panelRefreshKey(for: id))
+        KeychainStore.delete(KeychainStore.apiKeyKey(for: id))
+        KeychainStore.delete(KeychainStore.panelPasswordKey(for: id))
+        UserDefaults.standard.removeObject(forKey: tokenExpiryKey(for: id))
+
+        if activeID == id {
+            activeID = profiles.first?.id
+            if let next = activeID {
+                UserDefaults.standard.set(next.uuidString, forKey: activeKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: activeKey)
+            }
+            resetRuntimeState()
+        }
+        persistProfiles()
+    }
+
+    private func loadProfiles() {
+        if let data = UserDefaults.standard.data(forKey: profilesKey),
+           let list = try? JSONDecoder().decode([PanelProfile].self, from: data) {
+            profiles = list
+        }
+        seedDefaultProfileIfNeeded()
+
+        if let raw = UserDefaults.standard.string(forKey: activeKey), let id = UUID(uuidString: raw) {
+            activeID = profiles.contains { $0.id == id } ? id : profiles.first?.id
+        } else {
+            activeID = profiles.first?.id
+        }
+    }
+
+    /// 首次启动直接给出这台阿里云面板的入口，用户只需补密码。
+    /// 不预填密码：它只该由用户自己输入，App 不内嵌任何凭据。
+    private func seedDefaultProfileIfNeeded() {
+        guard profiles.isEmpty else { return }
+        let seeded = PanelProfile(
+            name: "我的面板",
+            mode: .publicNet,
+            host: "",
+            port: 80,
+            secure: false,
+            note: "",
+            pathPrefix: "",
+            authMode: .password,
+            username: ""
+        )
+        profiles = [seeded]
+        activeID = seeded.id
+        UserDefaults.standard.set(seeded.id.uuidString, forKey: activeKey)
+        persistProfiles()
+    }
+
+    private func persistProfiles() {
+        if let data = try? JSONEncoder().encode(profiles) {
+            UserDefaults.standard.set(data, forKey: profilesKey)
+        }
+    }
+
+    private func resetRuntimeState() {
+        state = .idle
+        health = nil
+        latency = nil
+        lastError = nil
+        errorHint = nil
+        needsLogin = false
+        lastRejectionAt = nil
+        store = [:]
+        expanded = []
+        chat = []
+        activeSessionID = nil
+        events = []
+        diagSteps = []
+        statsByRange = [:]
+        statsError = nil
+        statsUpdatedAt = nil
+        statsSnapshotAt = nil
+        statsFromSnapshot = false
+        dashboard = [:]
+        agents = []
+        agentsShape = ""
+        agentsProblem = nil
+        agentsError = nil
+        agentsUpdatedAt = nil
+        agentsFromSnapshot = false
+        agentPreview = nil
+        agentPreviewClient = nil
+        agentResources = [:]
+    }
+
+    // MARK: - API 实例
+
+    func makeAPI(
+        timeout: TimeInterval = 10,
+        token override: String? = nil,
+        apiKeyOverride: String? = nil
+    ) -> PanelAPI? {
+        guard let profile = activeProfile, profile.isValid else { return nil }
+        return PanelAPI(
+            base: profile.rootString,
+            token: override ?? activeToken,
+            apiKey: apiKeyOverride ?? activeAPIKey,
+            timeout: timeout
+        )
+    }
+
+    private func tokenExpiryKey(for id: UUID) -> String { "panel.tokenExpiry.\(id.uuidString)" }
+
+    private func tokenExpiry(for id: UUID) -> Date? {
+        let stamp = UserDefaults.standard.double(forKey: tokenExpiryKey(for: id))
+        return stamp > 0 ? Date(timeIntervalSince1970: stamp) : nil
+    }
+
+    /// 令牌是否还新鲜：留 2 分钟余量，快到点了就提前换。
+    /// 没有过期时间（服务端没给 expiresIn）时当作新鲜，让 401 兜底。
+    private func tokenIsFresh(_ id: UUID) -> Bool {
+        let value = token(for: id).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return false }
+        guard let expiry = tokenExpiry(for: id) else { return true }
+        return expiry > Date().addingTimeInterval(120)
+    }
+
+    // MARK: - 会话（单飞登录）
+
+    /// 账号密码模式下的会话保证。
+    ///
+    /// 这里是「频繁要求登录 / 凭证失效」的根治点，三条规则：
+    ///   1. **单飞**：并发的 401 只会触发一次真实登录，其余等同一个结果。
+    ///      面板每次登录都会换发新令牌，并发登录会互相把对方的令牌作废，
+    ///      表现就是「一直登、一直失效」。
+    ///   2. **只有面板真拒绝凭证时**才置 `needsLogin`。网络抖动、超时、
+    ///      某个接口 500 都不算凭证失效，不能弹登录。
+    ///   3. 令牌新鲜判断留 2 分钟余量，避免踩着过期点请求。
+    func loginIfNeeded(force: Bool = false) async -> Bool {
+        guard let profile = activeProfile else { return false }
+        guard profile.authMode == .password else { return true }
+
+        if !force, tokenIsFresh(profile.id) { return true }
+
+        // 被拒后 5 秒内不重复撞，避免在错误密码上打转
+        if let lastRejectionAt, Date().timeIntervalSince(lastRejectionAt) < 5 {
+            return false
+        }
+
+        if let loginTask { return await loginTask.value }
+
+        let task = Task<Bool, Never> { [weak self] in
+            guard let self else { return false }
+            // 先走刷新令牌：不碰密码、不重算人机题，也不会把上一枚令牌顶掉。
+            if await self.performRefresh() { return true }
+            // 刷新失败（没有 refreshToken / 已过期 / 被吊销）才回落到密码登录。
+            return await self.performLogin()
+        }
+        loginTask = task
+        let ok = await task.value
+        loginTask = nil
+        return ok
+    }
+
+    /// 用 refreshToken 续期。失败不翻 `needsLogin`，只把失效的 refresh 清掉。
+    private func performRefresh() async -> Bool {
+        guard let profile = activeProfile, profile.authMode == .password else { return false }
+        let stored = refreshToken(for: profile.id)
+        guard !stored.isEmpty, let api = makeAPI(timeout: 15) else { return false }
+
+        do {
+            let session = try await api.refreshSession(stored)
+            store(session: session, for: profile.id)
+            return true
+        } catch {
+            // 刷新令牌被吊销/过期：清掉，下一层用密码登录
+            KeychainStore.delete(KeychainStore.panelRefreshKey(for: profile.id))
+            return false
+        }
+    }
+
+    /// 把一对令牌写进钥匙串，并记下过期时间（服务端给的是秒）。
+    private func store(session: PanelSession, for id: UUID) {
+        KeychainStore.set(session.accessToken, for: KeychainStore.panelTokenKey(for: id))
+        if !session.refreshToken.isEmpty {
+            KeychainStore.set(session.refreshToken, for: KeychainStore.panelRefreshKey(for: id))
+        }
+        if session.expiresIn > 0 {
+            UserDefaults.standard.set(
+                Date().addingTimeInterval(TimeInterval(session.expiresIn)).timeIntervalSince1970,
+                forKey: tokenExpiryKey(for: id)
+            )
+        } else {
+            UserDefaults.standard.removeObject(forKey: tokenExpiryKey(for: id))
+        }
+        sessionGeneration &+= 1
+        needsLogin = false
+        lastRejectionAt = nil
+    }
+
+    private func performLogin() async -> Bool {
+        guard let profile = activeProfile else { return false }
+        let id = profile.id
+        let user = profile.username.trimmingCharacters(in: .whitespaces)
+        let pass = password(for: id)
+
+        guard !user.isEmpty, !pass.isEmpty else {
+            needsLogin = true
+            lastError = "还没有填管理员密码"
+            errorHint = "去「设置 → 连接方式」打开这个连接，补上密码后会自动登录。"
+            return false
+        }
+
+        guard let api = makeAPI(timeout: 20) else { return false }
+
+        do {
+            let session = try await api.login(username: user, password: pass)
+            store(session: session, for: id)
+            if lastError?.contains("密码") == true || lastError?.contains("登录") == true {
+                lastError = nil
+                errorHint = nil
+            }
+            return true
+        } catch {
+            let apiError = error as? PanelAPIError
+            let message = apiError?.errorDescription ?? error.localizedDescription
+            lastError = message
+            if apiError?.isCredentialRejection == true {
+                // 面板明确拒绝：这才是真的「凭证失效」，需要人去改密码
+                needsLogin = true
+                lastRejectionAt = Date()
+                errorHint = "面板拒绝了这组账号密码。去「设置 → 连接方式」改一次密码。"
+            } else {
+                // 网络不通 / 超时 / 5xx：不是凭证问题，不弹登录，等下一拍自然恢复
+                errorHint = apiError?.hint
+            }
+            return false
+        }
+    }
+
+    /// 所有鉴权请求的唯一入口：401 时换一次令牌再重试一次。
+    ///
+    /// 重试只用**新**令牌；如果重试还失败，把原始错误抛给调用方，
+    /// 但不在这里翻 `needsLogin` —— 单个接口失败不代表整个会话失效。
+    func authenticatedRequest(
+        _ method: String,
+        _ path: String,
+        body: Any? = nil,
+        timeout: TimeInterval = 12
+    ) async throws -> PanelResponse {
+        guard let api = makeAPI(timeout: timeout) else { throw PanelAPIError.notConfigured }
+        networkRequestCount &+= 1
+        do {
+            let response = try await api.request(method, path, body: body)
+            markAuthorized()
+            return response
+        } catch let error as PanelAPIError where error.isAuthFailure {
+            let generation = sessionGeneration
+            guard await loginIfNeeded(force: true), let retry = makeAPI(timeout: timeout) else {
+                throw error
+            }
+            networkRequestCount &+= 1
+            let response = try await retry.request(method, path, body: body)
+            if sessionGeneration != generation {
+                needsLogin = false
+                lastRejectionAt = nil
+                errorHint = nil
+            }
+            markAuthorized()
+            return response
+        }
+    }
+
+    /// 任意一次鉴权成功 = 会话有效：把残留的登录提示收掉。
+    private func markAuthorized() {
+        if needsLogin { needsLogin = false }
+        if lastRejectionAt != nil { lastRejectionAt = nil }
+    }
+
+    // MARK: - 连接
+
+    func connect() async {
+        guard activeProfile?.isValid == true else {
+            state = .idle
+            return
+        }
+        state = .connecting
+        lastError = nil
+        errorHint = nil
+
+        // 登录失败也继续往下走：/health 不需要令牌，先把「机器还在不在」问清；
+        // 真的登录被拒时，登录态会由 `needsLogin` 单独呈现。
+        let authorized = await loginIfNeeded()
+        guard let api = makeAPI() else {
+            state = .idle
+            return
+        }
+
+        do {
+            let result = try await api.health()
+            apply(health: result.health, latency: result.latencyMs)
+            record(result.health.isHealthy ? "健康检查通过 · \(result.latencyMs)ms" : "面板自报异常：\(result.health.statusText)", ok: result.health.isHealthy)
+            state = result.health.isHealthy ? .online : .degraded(result.health.statusText)
+            if authorized {
+                await loadDashboard(force: true)
+            }
+        } catch {
+            handle(failure: error)
+        }
+    }
+
+    /// 后台轮询：只刷新健康快照，不闪「连接中」，失败也不清空界面。
+    func poll() async {
+        guard let api = makeAPI(timeout: 8) else { return }
+        do {
+            let result = try await api.health()
+            apply(health: result.health, latency: result.latencyMs)
+            if result.health.isHealthy {
+                if state != .online { record("恢复在线 · \(result.latencyMs)ms", ok: true) }
+                state = .online
+            } else {
+                state = .degraded(result.health.statusText)
+            }
+            lastError = nil
+            errorHint = nil
+        } catch {
+            let apiError = error as? PanelAPIError
+            lastError = apiError?.errorDescription ?? error.localizedDescription
+            errorHint = apiError?.hint
+            if state.isOnline {
+                record("连接中断：\(lastError ?? "未知原因")", ok: false)
+            }
+            state = .failed(lastError ?? "连接失败")
+            // 健康检查本身不要令牌；走到这里只可能是网络/服务问题。
+            // 只有面板明确要求登录时才去换令牌，别因为一次抖动就重登。
+            if let apiError, case .needLogin = apiError {
+                _ = await loginIfNeeded(force: true)
+            }
+        }
+    }
+
+    func disconnect() {
+        pollTask?.cancel()
+        resetRuntimeState()
+    }
+
+    private func apply(health newValue: PanelHealth, latency value: Int) {
+        health = newValue
+        latency = value
+        lastChecked = Date()
+    }
+
+    private func handle(failure error: Error) {
+        let apiError = error as? PanelAPIError
+        lastError = apiError?.errorDescription ?? error.localizedDescription
+        errorHint = apiError?.hint
+        state = .failed(lastError ?? "连接失败")
+    }
+
+    // MARK: - 目录数据
+
+    func data(page: PanelPage, section: PanelSectionSpec) -> SectionData {
+        store[page.rawValue]?[section.id] ?? SectionData()
+    }
+
+    /// 区块里的列表行。兼容裸数组、`{data:[...]}`、`{data:{items:[...]}}` 等包装。
+    func rows(page: PanelPage, section: PanelSectionSpec) -> [JSONValue] {
+        guard let json = data(page: page, section: section).json else { return [] }
+        return PanelAPI.rows(from: json)
+    }
+
+    /// 区块里的标量字段（列表以外的那些），用于「上面指标、下面列表」的混排。
+    func scalars(page: PanelPage, section: PanelSectionSpec) -> [KeyValuePair] {
+        guard let json = data(page: page, section: section).json else { return [] }
+        return Self.unwrapped(json).flattened().filter { !$0.value.isEmpty }
+    }
+
+    // MARK: - 服务端信息 / 更新
+
+    /// `/api/system-info` 的原始返回（连接方式页的「服务端」卡用）
+    var systemInfoJSON: JSONValue? {
+        store[PanelPage.connection.rawValue]?["system"]?.json
+    }
+
+    /// 网关版本号：优先取 system-info 的 `app.version`
+    var serverVersionText: String? {
+        if let app = systemInfoJSON?.lookup("app"), let version = app.str("version"), !version.isEmpty {
+            return version
+        }
+        if let version = systemInfoJSON?.lookupString(["version"]), !version.isEmpty { return version }
+        if let version = updateInfo?.currentVersion, !version.isEmpty { return version }
+        return nil
+    }
+
+    /// 把服务端信息整理成可粘贴的文本（发给别人排障时用）
+    func serverReport() -> String {
+        guard let json = systemInfoJSON else { return "" }
+        var lines: [String] = []
+        for group in PanelFieldBuilder.groups(from: json) {
+            guard !group.fields.isEmpty else { continue }
+            if !group.title.isEmpty { lines.append("[\(group.title)]") }
+            for field in group.fields {
+                lines.append("\(field.label): \(field.copyText ?? field.value)")
+            }
+            lines.append("")
+        }
+        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 切换「隐藏用户名」：面板按 `?hideUsername=1` 把主目录缩成 `~`，切完重拉这一块。
+    func setHideUsername(_ value: Bool) async {
+        guard hideUsername != value else { return }
+        hideUsername = value
+        UserDefaults.standard.set(value, forKey: "panel.hideUsername.v1")
+        await load(page: .connection, force: true, only: ["system"])
+    }
+
+    /// 检查更新：`GET /api/update/check?current=<当前版本>`
+    func checkUpdate() async {
+        guard !updateChecking else { return }
+        updateChecking = true
+        updateError = nil
+
+        let current = serverVersionText ?? ""
+        var path = "/api/update/check"
+        if !current.isEmpty {
+            let encoded = current.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? current
+            path += "?current=\(encoded)"
+        }
+
+        do {
+            let response = try await authenticatedRequest("GET", path, timeout: 25)
+            let json = response.json
+            let info = UpdateCheckInfo(
+                currentVersion: json.lookupString(["currentVersion"]) ?? (current.isEmpty ? nil : current),
+                latestVersion: json.lookupString(["latestVersion", "latest", "version"]),
+                hasUpdate: json.lookupBool(["hasUpdate", "updateAvailable"]),
+                forced: json.lookupBool(["forceUpdate"]) ?? false,
+                notes: json.lookupString(["notes", "changelog", "releaseNotes"]),
+                pageURL: json.lookupString(["pageUrl", "url", "releaseUrl"]),
+                publishedAt: json.lookupString(["publishedAt"]),
+                checkedAt: Date()
+            )
+            updateInfo = info
+            if info.hasUpdate == true {
+                toast = Toast(text: "发现新版本 \(info.latestVersion ?? "")", kind: .warning)
+            } else if info.hasUpdate == false {
+                toast = Toast(text: "已是最新版本", kind: .success)
+            } else {
+                toast = Toast(text: "已向面板查询更新", kind: .info)
+            }
+            record("检查更新：\(info.title)", ok: true)
+        } catch {
+            let apiError = error as? PanelAPIError
+            updateError = apiError?.errorDescription ?? error.localizedDescription
+            toast = Toast(text: "检查更新失败：\(updateError ?? "未知原因")", kind: .error)
+            record("检查更新失败：\(updateError ?? "未知原因")", ok: false)
+        }
+
+        updateChecking = false
+    }
+
+    /// 拆掉 `{ok:true, data:{…}}` 这层包装。
+    ///
+    /// 面板大量接口都是「状态码 + 一层 data/summary」，直接拍平会让每个指标
+    /// 都带上 `data.` 前缀。只在顶层确实是个薄包装时才拆，避免把业务对象误拆。
+    private static func unwrapped(_ json: JSONValue) -> JSONValue {
+        guard let object = json.objectValue, (1...3).contains(object.count) else { return json }
+        let wrappers = ["data", "summary", "result", "stats", "usage", "overview", "info"]
+        for key in wrappers {
+            guard let inner = object[key], inner.objectValue != nil else { continue }
+            return inner
+        }
+        return json
+    }
+
+    func isExpanded(_ page: PanelPage, _ section: PanelSectionSpec) -> Bool {
+        expanded.contains("\(page.rawValue)/\(section.id)")
+    }
+
+    func toggleExpanded(_ page: PanelPage, _ section: PanelSectionSpec) {
+        let key = "\(page.rawValue)/\(section.id)"
+        if expanded.contains(key) {
+            expanded.remove(key)
+        } else {
+            expanded.insert(key)
+            if store[page.rawValue]?[section.id]?.json == nil {
+                Task { await load(page: page, only: [section.id]) }
+            }
+        }
+    }
+
+    /// 载入一个页面：**先用本地快照，缺什么才补什么**。
+    ///
+    /// 只有 `force: true`（下拉刷新、右上角刷新、定时同步）才会整块重拉；
+    /// 普通进入页面时，磁盘里有快照就一个请求都不发。
+    func load(page: PanelPage, force: Bool = false, only: Set<String>? = nil) async {
+        guard activeProfile?.isValid == true else { return }
+
+        let spec = page.spec
+        var targets = spec.sections.filter { section in
+            if let only { return only.contains(section.id) }
+            if section.collapsed && !isExpanded(page, section) { return false }
+            return true
+        }
+        guard !targets.isEmpty else { return }
+
+        if !force, let id = activeID {
+            seedSections(page: page, sections: targets, profile: id)
+            targets = targets.filter { store[page.rawValue]?[$0.id]?.json == nil }
+            guard !targets.isEmpty else { return }
+        }
+
+        _ = await loginIfNeeded()
+
+        await withTaskGroup(of: (String, SectionData).self) { group in
+            for section in targets {
+                markLoading(page: page, id: section.id, true)
+                group.addTask { [weak self] in
+                    guard let self else { return (section.id, SectionData()) }
+                    let result = await self.fetch(page: page, section: section)
+                    return (section.id, result)
+                }
+            }
+            for await (id, result) in group {
+                var bucket = store[page.rawValue] ?? [:]
+                var merged = result
+                // 失败时保留旧数据与旧时间，只换错误文案
+                if result.json == nil, let old = bucket[id] {
+                    merged.json = old.json
+                    merged.fetchedAt = old.fetchedAt
+                }
+                merged.loading = false
+                bucket[id] = merged
+                store[page.rawValue] = bucket
+            }
+        }
+    }
+
+    private func markLoading(page: PanelPage, id: String, _ value: Bool) {
+        var bucket = store[page.rawValue] ?? [:]
+        var item = bucket[id] ?? SectionData()
+        item.loading = value
+        bucket[id] = item
+        store[page.rawValue] = bucket
+    }
+
+    private func fetch(page: PanelPage, section: PanelSectionSpec) async -> SectionData {
+        do {
+            // 服务端信息支持隐藏用户名（面板自带的能力），路径里就不会出现 /home/xxx
+            var path = section.fullPath
+            if section.id == "system" && hideUsername {
+                path += path.contains("?") ? "&hideUsername=1" : "?hideUsername=1"
+            }
+            let response = try await authenticatedRequest("GET", path)
+            if section.id == "health" {
+                apply(health: PanelHealth(json: response.json), latency: response.latencyMs)
+            }
+            // 成功即落盘：下次进来先读它，不再等网络
+            persist(response.json, key: VaultKey.section(page: page.rawValue, id: section.id))
+            return SectionData(
+                json: response.json,
+                error: nil,
+                fetchedAt: Date(),
+                latency: response.latencyMs
+            )
+        } catch {
+            let apiError = error as? PanelAPIError
+            return SectionData(
+                json: nil,
+                error: apiError?.errorDescription ?? error.localizedDescription,
+                fetchedAt: nil,
+                latency: nil
+            )
+        }
+    }
+
+    /// 显式同步：这是唯一会「整块重拉」的入口（下拉刷新 / 右上角刷新 / 全部刷新）。
+    func refreshAll() async {
+        await connect()
+        await syncAgents()
+        for page in [PanelPage.routing, .accounts] {
+            await load(page: page, force: true)
+        }
+    }
+
+    func refresh(page: PanelPage) async {
+        await load(page: page, force: true)
+    }
+
+    // MARK: - 概览仪表盘（本地优先）
+
+    /// 四个区间在同步时一次拉齐；切区间只读本地，不发请求。
+    static let statsRanges = ["today", "yesterday", "7", "30"]
+
+    static func rangeTitle(_ range: String) -> String {
+        switch range {
+        case "today": return "今天"
+        case "yesterday": return "昨天"
+        case "7": return "近 7 天"
+        case "30": return "近 30 天"
+        default: return range
+        }
+    }
+
+    /// 切区间：**纯本地动作**。不 await、不联网。
+    ///
+    /// 四个区间的统计在「同步」时一次拉齐并落盘，所以这里只是换一个字典键，
+    /// KPI、柱状图、环形图、本地派生指标跟着重算一遍。
+    func setStatsRange(_ range: String) {
+        guard statsRange != range else { return }
+        statsRange = range
+        localComputeCount &+= 1
+        if statsByRange[range] == nil {
+            statsError = "本地还没有「\(Self.rangeTitle(range))」的快照，点一次「同步」补齐。"
+        } else {
+            statsError = nil
+        }
+        objectWillChange.send()
+    }
+
+    /// 显示数据：先读盘，本地有就不进网络。
+    func loadDashboard(force: Bool = false) async {
+        guard let profile = activeProfile, profile.isValid else { return }
+        if !force {
+            seedDashboard(profile: profile.id)
+            seedAgents(profile: profile.id)
+            if statsByRange[statsRange] != nil { return }
+        }
+        await syncDashboard()
+    }
+
+    /// 唯一的仪表盘网络入口。
+    ///
+    /// 九个请求并发、互不牵连：某个区间失败只让那个区间空着；
+    /// 账号 / 队列 / 签到失败只让运行态少一格。拿到的每一份都写进本地快照，
+    /// 下次冷启动就不用再等网络。
+    func syncDashboard() async {
+        guard activeProfile?.isValid == true else { return }
+        _ = await loginIfNeeded()
+
+        dashboardToken &+= 1
+        let token = dashboardToken
+        statsLoading = true
+
+        async let todayJSON = fetchJSON("/api/stats/summary?range=today")
+        async let yesterdayJSON = fetchJSON("/api/stats/summary?range=yesterday")
+        async let weekJSON = fetchJSON("/api/stats/summary?range=7")
+        async let monthJSON = fetchJSON("/api/stats/summary?range=30")
+        async let accountsJSON = fetchJSON("/api/accounts")
+        async let panelJSON = fetchJSON("/api/panel/status")
+        async let queueJSON = fetchJSON("/api/routing/queue")
+        async let checkinJSON = fetchJSON("/api/checkin-center")
+        async let requestsJSON = fetchJSON("/api/stats/requests?limit=12")
+
+        let (today, yesterday, week, month, accounts, panel, queue, checkin, requests) = await (
+            todayJSON, yesterdayJSON, weekJSON, monthJSON,
+            accountsJSON, panelJSON, queueJSON, checkinJSON, requestsJSON
+        )
+
+        guard token == dashboardToken else { return }
+
+        var parsed = statsByRange
+        var failures: [String] = []
+        let statsResults: [(String, (JSONValue?, String?))] = [
+            ("today", today), ("yesterday", yesterday), ("7", week), ("30", month)
+        ]
+        for (range, result) in statsResults {
+            if let json = result.0 {
+                parsed[range] = PanelStatsSummary.parse(json, range: range)
+                persist(json, key: VaultKey.stats(range: range))
+            } else {
+                failures.append("\(Self.rangeTitle(range))：\(result.1 ?? "没有返回数据")")
+            }
+        }
+        statsByRange = parsed
+        if statsByRange[statsRange] != nil {
+            statsUpdatedAt = Date()
+            statsFromSnapshot = false
+            statsError = failures.isEmpty ? nil : "部分区间没取到：" + failures.joined(separator: "；")
+        } else {
+            statsError = failures.first ?? "统计接口没有返回数据"
+        }
+
+        var board = dashboard
+        let boardResults: [(String, (JSONValue?, String?))] = [
+            ("accounts", accounts), ("panel", panel), ("queue", queue),
+            ("checkin", checkin), ("requests", requests)
+        ]
+        for (name, result) in boardResults {
+            guard let json = result.0 else { continue }
+            board[name] = json
+            persist(json, key: VaultKey.dashboard(name))
+        }
+        dashboard = board
+        statsLoading = false
+        localComputeCount &+= 1
+    }
+
+    /// 把一份 JSON 写进本地快照（这是「下次不联网也能看」的唯一来源）。
+    private func persist(_ json: JSONValue, key: String) {
+        guard let id = activeID else { return }
+        LocalVault.shared.store(profile: id, key: key, json: json)
+        refreshVaultStats(profile: id)
+    }
+
+    /// 清空本地快照（只删磁盘副本，不动面板）。
+    func clearVault() {
+        guard let id = activeID else { return }
+        LocalVault.shared.remove(profile: id)
+        refreshVaultStats(profile: id)
+        toast = Toast(text: "本地快照已清空，下次进页面会重新读取", kind: .success)
+    }
+
+    func refreshVaultStats(profile: UUID) {
+        let summary = LocalVault.shared.summary(profile: profile)
+        vaultEntryCount = summary.count
+        vaultNewest = summary.newest
+    }
+
+    /// 把磁盘上的统计快照铺进内存（本地解析，不发请求）。
+    private func seedDashboard(profile: UUID) {
+        LocalVault.shared.load(profile: profile)
+        var parsed: [String: PanelStatsSummary] = [:]
+        var newest: Date?
+
+        for range in Self.statsRanges {
+            guard let entry = LocalVault.shared.entry(profile: profile, key: VaultKey.stats(range: range)),
+                  let json = JSONValue.fromJSONData(entry.payload) else { continue }
+            parsed[range] = PanelStatsSummary.parse(json, range: range)
+            newest = max(newest ?? entry.savedAt, entry.savedAt)
+        }
+
+        if !parsed.isEmpty {
+            for (range, value) in parsed where statsByRange[range] == nil {
+                statsByRange[range] = value
+            }
+            if statsUpdatedAt == nil { statsUpdatedAt = newest }
+            statsSnapshotAt = newest
+            statsFromSnapshot = true
+            localComputeCount &+= 1
+        }
+
+        var board = dashboard
+        for name in ["accounts", "panel", "queue", "checkin", "requests"] {
+            guard let entry = LocalVault.shared.entry(profile: profile, key: VaultKey.dashboard(name)),
+                  let json = JSONValue.fromJSONData(entry.payload) else { continue }
+            if board[name] == nil { board[name] = json }
+        }
+        if !board.isEmpty { dashboard = board }
+    }
+
+    /// 冷启动时把所有页面已有的快照一次性铺好。
+    private func seedAllPages(profile: UUID) {
+        for page in PanelPage.allCases {
+            seedSections(page: page, sections: page.spec.sections, profile: profile)
+        }
+    }
+
+    private func seedSections(page: PanelPage, sections: [PanelSectionSpec], profile: UUID) {
+        LocalVault.shared.load(profile: profile)
+        var bucket = store[page.rawValue] ?? [:]
+        var changed = false
+        for section in sections {
+            if bucket[section.id]?.json != nil { continue }
+            guard let entry = LocalVault.shared.entry(
+                profile: profile,
+                key: VaultKey.section(page: page.rawValue, id: section.id)
+            ), let json = JSONValue.fromJSONData(entry.payload) else { continue }
+            bucket[section.id] = SectionData(json: json, error: nil, fetchedAt: entry.savedAt, latency: nil)
+            changed = true
+        }
+        if changed {
+            store[page.rawValue] = bucket
+            localComputeCount &+= 1
+        }
+    }
+
+    // MARK: - Agent 配置（本地解析 + 明确报错）
+
+    /// 本地有没有解析出东西（界面上决定显示「重新读取」还是直接渲染）。
+    var agentsLoaded: Bool { !agents.isEmpty || agentsProblem != nil }
+
+    /// 读数据：先本地，缺了才进网络。
+    func loadAgents(force: Bool = false) async {
+        guard let profile = activeProfile, profile.isValid else { return }
+        if !force {
+            seedAgents(profile: profile.id)
+            if agentsLoaded { return }
+        }
+        await syncAgents()
+    }
+
+    private func seedAgents(profile: UUID) {
+        LocalVault.shared.load(profile: profile)
+        guard let entry = LocalVault.shared.entry(profile: profile, key: VaultKey.agents),
+              let json = JSONValue.fromJSONData(entry.payload) else { return }
+        let outcome = AgentConfigParser.parse(json)
+        if agents.isEmpty {
+            agents = outcome.clients
+            agentsShape = outcome.shape
+            agentsProblem = outcome.problem
+            agentsUpdatedAt = entry.savedAt
+            agentsFromSnapshot = true
+            localComputeCount &+= 1
+        }
+    }
+
+    /// 唯一入口：`GET /api/agents`，回 `{clients:[…]}`。解析交给 `AgentConfigParser`。
+    func syncAgents() async {
+        guard activeProfile?.isValid == true else { return }
+        agentsLoading = true
+        agentsError = nil
+        do {
+            let response = try await authenticatedRequest("GET", "/api/agents")
+            let outcome = AgentConfigParser.parse(response.json)
+            agents = outcome.clients
+            agentsShape = outcome.shape
+            agentsProblem = outcome.problem
+            agentsUpdatedAt = Date()
+            agentsFromSnapshot = false
+            if let id = activeID {
+                LocalVault.shared.store(profile: id, key: VaultKey.agents, json: response.json)
+                refreshVaultStats(profile: id)
+            }
+            localComputeCount &+= 1
+            if let problem = outcome.problem {
+                agentsError = problem
+            }
+        } catch {
+            let apiError = error as? PanelAPIError
+            agentsError = apiError?.errorDescription ?? error.localizedDescription
+            if case .http(let code, _)? = apiError, code == 404 {
+                agentsError = "这台面板没有 /api/agents（HTTP 404），升级面板后再看这一页。"
+            }
+        }
+        agentsLoading = false
+    }
+
+    /// 预览恢复：`POST /api/agents/preview`，body 必须是 `{clientId, operation:"restore"}`。
+    func previewAgent(_ client: AgentClient) async {
+        guard activeProfile?.isValid == true else { return }
+        guard !client.id.isEmpty else {
+            toast = Toast(text: "这个客户端没有 id，面板无法预览", kind: .warning)
+            return
+        }
+        agentWorkingID = client.id
+        do {
+            let response = try await authenticatedRequest(
+                "POST", "/api/agents/preview",
+                body: ["clientId": client.id, "operation": "restore"]
+            )
+            let parsed = AgentPreviewParser.parse(response.json, clientID: client.id)
+            if let preview = parsed.preview {
+                agentPreview = preview
+                agentPreviewClient = client
+                if let problem = parsed.problem {
+                    toast = Toast(text: problem, kind: .warning)
+                }
+            } else {
+                toast = Toast(text: parsed.problem ?? "预览没有返回内容", kind: .error)
+            }
+        } catch {
+            let apiError = error as? PanelAPIError
+            toast = Toast(
+                text: "预览失败：\(apiError?.errorDescription ?? error.localizedDescription)",
+                kind: .error
+            )
+        }
+        agentWorkingID = nil
+    }
+
+    /// 恢复上次应用：必须带着预览返回的令牌，否则面板会拒绝覆盖。
+    func restoreAgent(_ client: AgentClient) async {
+        guard activeProfile?.isValid == true else { return }
+        guard let token = agentPreview?.token, !token.isEmpty else {
+            toast = Toast(text: "没有预览令牌，先点一次「预览」", kind: .warning)
+            return
+        }
+        agentWorkingID = client.id
+        do {
+            _ = try await authenticatedRequest(
+                "POST", "/api/agents/restore",
+                body: [
+                    "clientId": client.id,
+                    "operation": "restore",
+                    "token": token
+                ]
+            )
+            toast = Toast(text: "配置已恢复并校验", kind: .success)
+            record("Agent 配置已恢复：\(client.name)", ok: true)
+            agentPreview = nil
+            agentPreviewClient = nil
+            await syncAgents()
+        } catch {
+            let apiError = error as? PanelAPIError
+            toast = Toast(
+                text: "恢复失败：\(apiError?.errorDescription ?? error.localizedDescription)",
+                kind: .error
+            )
+        }
+        agentWorkingID = nil
+    }
+
+    /// 读某个客户端的提示词 / Skill / MCP：`GET /api/agents/{id}/resources`。
+    func loadAgentResources(_ client: AgentClient) async {
+        guard activeProfile?.isValid == true, !client.id.isEmpty else { return }
+        agentWorkingID = client.id
+        do {
+            let encoded = client.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? client.id
+            let response = try await authenticatedRequest("GET", "/api/agents/\(encoded)/resources")
+            agentResources[client.id] = response.json
+        } catch {
+            let apiError = error as? PanelAPIError
+            toast = Toast(
+                text: "读取资源失败：\(apiError?.errorDescription ?? error.localizedDescription)",
+                kind: .error
+            )
+        }
+        agentWorkingID = nil
+    }
+
+    /// 本地派生指标（日均 / 每请求 Token / 头部集中度 / 峰值日 / 环比）。
+    var localInsights: [PanelLocalInsight] {
+        guard let summary = stats else { return [] }
+        return LocalStatsEngine.insights(
+            summary: summary,
+            siblings: statsByRange,
+            range: statsRange
+        )
+    }
+
+    /// 拉一个 JSON；失败时把错误文案一起带回来。
+    private func fetchJSON(_ path: String) async -> (JSONValue?, String?) {
+        do {
+            let response = try await authenticatedRequest("GET", path)
+            return (response.json, nil)
+        } catch {
+            let apiError = error as? PanelAPIError
+            return (nil, apiError?.errorDescription ?? error.localizedDescription)
+        }
+    }
+
+    // MARK: 仪表盘的周边数据
+
+    var dashboardAccounts: [JSONValue] {
+        dashboard["accounts"].map { PanelAPI.rows(from: $0) } ?? []
+    }
+
+    var dashboardRequests: [JSONValue] {
+        dashboard["requests"].map { PanelAPI.rows(from: $0) } ?? []
+    }
+
+    var dashboardQueue: [JSONValue] {
+        dashboard["queue"].map { PanelAPI.rows(from: $0) } ?? []
+    }
+
+    /// 路由队列里真正排着的账号数：`/api/routing/queue` 回的是 `{ordered:[…], blocked:[…]}`。
+    var routingQueueCount: Int {
+        guard let json = dashboard["queue"] else { return 0 }
+        let node = json.value("data") ?? json
+        if let ordered = node.arr("ordered") {
+            return ordered.count + (node.arr("blocked")?.count ?? 0)
+        }
+        return PanelAPI.rows(from: json).count
+    }
+
+    var dashboardPanel: JSONValue? { dashboard["panel"] }
+
+    /// 启用中的账号数 / 总数
+    var accountCounts: (enabled: Int, total: Int) {
+        let rows = dashboardAccounts
+        let enabled = rows.filter { row in
+            if let flag = row.bool("enabled") { return flag }
+            if let status = row.str("status") {
+                return !["dis", "off", "fail", "expire"].contains { status.lowercased().contains($0) }
+            }
+            return true
+        }.count
+        return (enabled, rows.count)
+    }
+
+    /// 被限流的账号数（服务端字段名各版本不一，宽松匹配）
+    var rateLimitedCount: Int {
+        dashboardAccounts.filter { row in
+            if row.bool("rateLimited") == true || row.bool("limited") == true { return true }
+            let status = (row.str("status") ?? "").lowercased()
+            return status.contains("limit") || status.contains("限流")
+        }.count
+    }
+
+    /// 今日签到：done / eligible
+    var checkinProgress: (done: Int, total: Int) {
+        guard let daily = dashboard["checkin"]?.obj("daily") else { return (0, 0) }
+        return (daily.int("todayDone") ?? 0, daily.int("todayEligible") ?? 0)
+    }
+
+    // MARK: - 动作
+
+    /// 执行区块声明的动作。`row` 用于把行 id 填进 `{id}` 占位符。
+    func perform(
+        action: PanelActionSpec,
+        page: PanelPage,
+        section: PanelSectionSpec,
+        row: JSONValue? = nil
+    ) async {
+        var path = action.path
+        var body: [String: Any] = action.extra
+        if action.usesRow {
+            guard let row, let id = row.firstString(action.idKeys) else {
+                toast = Toast(text: "这一行没有可用的 id 字段", kind: .warning)
+                return
+            }
+            path = path.replacingOccurrences(of: "{id}", with: id)
+            body["id"] = id
+        }
+
+        await submit(
+            action.title,
+            method: action.method,
+            path: path,
+            body: body,
+            onSuccess: { [weak self] in
+                await self?.load(page: page, force: true, only: [section.id])
+            }
+        )
+    }
+
+    /// 概览快捷操作直接调用的入口（不在任何页面的目录里）。
+    func runCommand(
+        _ title: String,
+        method: String = "POST",
+        path: String,
+        body: [String: Any] = [:],
+        refreshDashboard: Bool = true
+    ) async {
+        await submit(
+            title,
+            method: method,
+            path: path,
+            body: body,
+            onSuccess: { [weak self] in
+                if refreshDashboard { await self?.loadDashboard(force: true) }
+            }
+        )
+    }
+
+    /// 写操作的统一收口：401 会自动换令牌重试一次，成功后提示 + 刷新。
+    private func submit(
+        _ title: String,
+        method: String,
+        path: String,
+        body: [String: Any],
+        onSuccess: @escaping () async -> Void
+    ) async {
+        do {
+            // 写接口一律带 body：Go 侧对 POST 的空 body 会直接判 400，
+            // 所以没有字段时也发一个 `{}`。
+            let payload: Any? = (method == "GET") ? nil : body
+            _ = try await authenticatedRequest(method, path, body: payload, timeout: 30)
+            toast = Toast(text: "\(title)已提交", kind: .success)
+            record(title, ok: true)
+            await onSuccess()
+        } catch {
+            let apiError = error as? PanelAPIError
+            let message = apiError?.errorDescription ?? error.localizedDescription
+            toast = Toast(text: "\(title)失败：\(message)", kind: .error)
+            record("\(title)失败：\(message)", ok: false)
+        }
+    }
+
+    // MARK: - 助手对话
+
+    func newChat() {
+        chat = []
+        activeSessionID = nil
+    }
+
+    /// 发送一条消息。附件与访问权限都在本地拼进报文：
+    ///   · 文件（JSON / TXT / MD）折进文本，和桌面端一样；
+    ///   · 图片走 `image_url` + `data:` URL，不在服务器留副本；
+    ///   · 访问权限只影响提示词（网关权限是服务端策略，客户端没有改它的接口）。
+    func sendChat(_ text: String) {
+        let content = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pending = attachments
+        guard !content.isEmpty || !pending.isEmpty, !isReplying else { return }
+        guard activeProfile?.isValid == true else { return }
+        // 没有可用的网关 Key 就不要发：面板只会回「所选 API Key 已失效」。
+        guard !assistantKeyValue.isEmpty else {
+            toast = Toast(text: "先在输入框里选一把可用的网关 Key", kind: .warning)
+            if gatewayKeys.isEmpty { Task { await loadGatewayKeys() } }
+            return
+        }
+
+        // 1) 文件内容折进正文
+        var finalText = content
+        for item in pending where !item.isImage {
+            guard let body = item.text else { continue }
+            finalText += "\n\n--- 文件：\(item.name) ---\n\(body)"
+        }
+        if let instruction = assistantAccess.instruction {
+            finalText = instruction + "\n\n" + finalText
+        }
+
+        // 2) 图片转 data URL
+        let images = pending.compactMap(\.dataURL)
+
+        // 3) 气泡上显示的文字（图片用占位，不塞 base64）
+        var display = content
+        if !images.isEmpty {
+            display += (display.isEmpty ? "" : "\n") + "［\(images.count) 张图片］"
+        }
+        for item in pending where !item.isImage {
+            display += (display.isEmpty ? "" : "\n") + "［文件 \(item.name)］"
+        }
+        if display.isEmpty { display = "（已发送附件）" }
+
+        // 4) 历史 + 本次消息
+        let history = chat.map { message -> [String: Any] in
+            ["role": message.role.rawValue, "content": message.text]
+        }
+
+        var current: [String: Any]
+        if images.isEmpty {
+            current = ["role": "user", "content": finalText]
+        } else {
+            var parts: [[String: Any]] = [["type": "text", "text": finalText]]
+            for url in images {
+                parts.append(["type": "image_url", "image_url": ["url": url]])
+            }
+            current = ["role": "user", "content": parts]
+        }
+
+        chat.append(ChatMessage(role: .user, text: display))
+        let answerID = UUID()
+        chat.append(ChatMessage(id: answerID, role: .assistant, text: ""))
+        isReplying = true
+        attachments = []
+
+        var messages = history
+        messages.append(current)
+        var body: [String: Any] = ["messages": messages]
+        if !assistantModel.trimmingCharacters(in: .whitespaces).isEmpty {
+            body["model"] = assistantModel.trimmingCharacters(in: .whitespaces)
+        }
+
+        chatTask?.cancel()
+        chatTask = Task { [weak self] in
+            guard let self else { return }
+            _ = await self.loginIfNeeded()
+
+            var attempt = 0
+            while attempt < 2 {
+                guard let api = self.makeAPI(
+                    timeout: 120,
+                    apiKeyOverride: self.assistantKeyValue
+                ) else {
+                    self.finishReply(answerID, error: PanelAPIError.notConfigured)
+                    return
+                }
+                do {
+                    try await api.streamChat("/api/assistant/chat", body: body) { piece in
+                        Task { @MainActor in
+                            self.appendAssistant(piece, to: answerID)
+                        }
+                    }
+                    self.finishReply(answerID, error: nil)
+                    return
+                } catch {
+                    let authFailure = (error as? PanelAPIError)?.isAuthFailure == true
+                    let hasContent = self.chat.first(where: { $0.id == answerID })?.text.isEmpty == false
+                    if authFailure, attempt == 0, !hasContent {
+                        attempt += 1
+                        _ = await self.loginIfNeeded(force: true)
+                        continue
+                    }
+                    self.finishReply(answerID, error: error)
+                    return
+                }
+            }
+        }
+    }
+
+    private func finishReply(_ id: UUID, error: Error?) {
+        isReplying = false
+        guard let index = chat.firstIndex(where: { $0.id == id }) else { return }
+        if let error {
+            let apiError = error as? PanelAPIError
+            let message = apiError?.errorDescription ?? error.localizedDescription
+            chat[index].text = chat[index].text.isEmpty
+                ? "请求失败：\(message)"
+                : chat[index].text + "\n\n（中断：\(message)）"
+        } else if chat[index].text.isEmpty {
+            chat[index].text = "面板没有返回内容。"
+        }
+    }
+
+    private func appendAssistant(_ piece: String, to id: UUID) {
+        guard let index = chat.firstIndex(where: { $0.id == id }) else { return }
+        chat[index].text += piece
+    }
+
+    func stopChat() {
+        chatTask?.cancel()
+        isReplying = false
+    }
+
+    // MARK: - 本地自检（不发任何一个请求）
+
+    /// 检查的是「本地这一套能不能自己跑起来」：
+    /// 配置解析、钥匙串令牌、磁盘快照、统计能否复算、Agent 报文能否解析、
+    /// 图表组件是否全在本地。**全程零网络**。
+    func runDiagnostics() async {
+        isDiagnosing = true
+        diagSteps = []
+        await Task.yield()
+
+        // 1. 连接配置（本地解析）
+        if let profile = activeProfile {
+            diagSteps.append(
+                DiagStep(title: "连接配置", ok: true, detail: "\(profile.mode.title) · \(profile.rootString)")
+            )
+            if profile.trimmedHost == "127.0.0.1" || profile.trimmedHost == "localhost" {
+                diagSteps.append(
+                    DiagStep(
+                        title: "地址可用性",
+                        ok: false,
+                        detail: "127.0.0.1 在手机上指向手机自己。本地渲染不受影响，但同步会失败。"
+                    )
+                )
+            }
+        } else {
+            diagSteps.append(DiagStep(title: "连接配置", ok: false, detail: "还没有新建连接"))
+        }
+
+        // 2. 令牌（只读钥匙串，不请求）
+        if activeProfile?.authMode == .password {
+            let hasToken = !activeToken.isEmpty
+            diagSteps.append(
+                DiagStep(
+                    title: "访问令牌",
+                    ok: hasToken,
+                    detail: hasToken ? "钥匙串里有一枚令牌（\(max(activeToken.count, 8)) 字符）" : "钥匙串里没有令牌，点同步会重新登录"
+                )
+            )
+        } else {
+            let hasKey = !activeAPIKey.isEmpty
+            diagSteps.append(
+                DiagStep(title: "接口密钥", ok: hasKey, detail: hasKey ? "钥匙串里有密钥" : "还没填密钥")
+            )
+        }
+
+        // 3. 磁盘快照
+        let vault = vaultEntryCount
+        diagSteps.append(
+            DiagStep(
+                title: "本地快照",
+                ok: vault > 0,
+                detail: vault == 0
+                    ? "还没有快照：第一次必须先同步一次"
+                    : "\(vault) 份 · 最新 \(vaultNewest?.formatted("MM-dd HH:mm") ?? "—")，断网也能渲染"
+            )
+        )
+
+        // 4. 统计本地计算
+        let ranges = statsByRange.keys.sorted()
+        if let summary = stats {
+            let insights = localInsights.count
+            diagSteps.append(
+                DiagStep(
+                    title: "统计与图表",
+                    ok: !summary.trend.isEmpty || summary.requests > 0,
+                    detail: "区间 \(Self.rangeTitle(statsRange)) · \(summary.trend.count) 个趋势点 · \(insights) 项本地派生指标 · 已缓存区间 \(ranges.count)/4"
+                )
+            )
+        } else {
+            diagSteps.append(
+                DiagStep(title: "统计与图表", ok: false, detail: "本地没有统计快照，先同步一次")
+            )
+        }
+
+        // 5. Agent 报文解析
+        let parsedAgents = AgentConfigParser.parse(.object([:]))
+        diagSteps.append(
+            DiagStep(
+                title: "Agent 解析器",
+                ok: agentsProblem == nil,
+                detail: agentsProblem
+                    ?? "形状 \(agentsShape.isEmpty ? "未同步" : agentsShape) · \(agents.count) 个客户端 · 空对象兜底 \(parsedAgents.shape)"
+            )
+        )
+
+        // 6. 渲染引擎（静态检查：工程里没有网页容器）
+        diagSteps.append(
+            DiagStep(
+                title: "渲染方式",
+                ok: true,
+                detail: "柱状图 / 环形图 / KPI 全部 SwiftUI 手绘，无 WKWebView、无远程脚本与 CDN"
+            )
+        )
+
+        // 7. 本次运行计量
+        diagSteps.append(
+            DiagStep(
+                title: "本次运行",
+                ok: networkRequestCount >= 0,
+                detail: "网络请求 \(networkRequestCount) 次 · 本地计算 \(localComputeCount) 次"
+            )
+        )
+
+        isDiagnosing = false
+    }
+
+    private func record(_ text: String, ok: Bool) {
+        events.insert(PanelEvent(at: Date(), text: text, ok: ok), at: 0)
+        if events.count > 60 { events.removeLast(events.count - 60) }
+    }
+
+    private func startPolling() {
+        pollTask?.cancel()
+        pollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                guard let self else { return }
+                if Task.isCancelled { return }
+                guard self.autoRefresh, self.isConfigured else { continue }
+                self.pollTick &+= 1
+                if self.state.isOnline || self.pollTick % 4 == 0 {
+                    await self.poll()
+                }
+                // 每 4 拍（≈32s）顺带把仪表盘的数据换新；失败不影响健康检查。
+                if self.state.isOnline, self.pollTick % 4 == 0 {
+                    await self.loadDashboard(force: true)
+                }
+            }
+        }
+    }
+
+    func handleBecameActive() {
+        guard autoRefresh, isConfigured else { return }
+        Task { await connect() }
+    }
+
+    /// 本地计算计量（扩展文件里用，`private(set)` 在扩展里改不了）。
+    func noteLocalCompute(_ count: Int = 1) {
+        localComputeCount &+= count
+    }
+
+    func haptic(_ style: UIImpactFeedbackGenerator.FeedbackStyle = .light) {
+        guard hapticsEnabled else { return }
+        UIImpactFeedbackGenerator(style: style).impactOccurred()
+    }
+
+    func copy(_ text: String, label: String = "已复制") {
+        UIPasteboard.general.string = text
+        toast = Toast(text: label, kind: .success)
+        localComputeCount &+= 1
+    }
+
+    /// 把当前区间的 KPI 与本地派生指标拼成可粘贴文本（纯本地，不发请求）。
+    func copySummary() {
+        guard let summary = stats else {
+            toast = Toast(text: "还没有统计数据，先同步一次", kind: .warning)
+            return
+        }
+        var lines: [String] = []
+        lines.append("面板：\(activeProfile?.name ?? "—")（\(activeProfile?.displayAddress ?? "—")）")
+        lines.append("区间：\(Self.rangeTitle(statsRange)) · 数据时间 \(statsUpdatedAt?.formatted("yyyy-MM-dd HH:mm:ss") ?? "—")")
+        lines.append("请求 \(PanelNumber.grouping(summary.requests)) · 成功 \(PanelNumber.grouping(summary.successful)) · 成功率 \(PanelNumber.percent(summary.successRate))")
+        lines.append("Token \(PanelNumber.grouping(summary.tokens)) · 缓存命中 \(PanelNumber.percent(summary.cacheRate)) · 趋势 \(summary.trend.count) 天")
+        for item in localInsights {
+            lines.append("\(item.title)：\(item.value)（\(item.note)）")
+        }
+        copy(lines.joined(separator: "\n"), label: "用量摘要已复制")
+    }
+}

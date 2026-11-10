@@ -1,0 +1,35 @@
+name: local-engine-check
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'PanelPilot/Core/**'
+      - 'PanelPilot/Theme/Date+Format.swift'
+      - 'scripts/ParserCheck/**'
+      - '.github/workflows/local-engine-check.yml'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: xcrun swift --version
+
+      - name: Compile local engine checks
+        run: |
+          set -euo pipefail
+          swiftc -O \
+            PanelPilot/Core/Model/JSONValue.swift \
+            PanelPilot/Core/Net/JSONRows.swift \
+            PanelPilot/Core/Model/PanelStats.swift \
+            PanelPilot/Core/Model/LocalStatsEngine.swift \
+            PanelPilot/Core/Model/AgentClient.swift \
+            PanelPilot/Theme/Date+Format.swift \
+            scripts/ParserCheck/main.swift \
+            -o /tmp/local-engine-check
+
+      - name: Run local engine checks
+        run: /tmp/local-engine-check
