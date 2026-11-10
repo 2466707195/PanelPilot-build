@@ -17,6 +17,8 @@ struct AgentConfigPane: View {
     @State private var baseURL: String = ""
     @State private var apiKey: String = ""
     @State private var modelName: String = ""
+    /// 选中的提供商：配置里会写入它下面的**全部**模型
+    @State private var provider: String = ""
     @State private var presetID: String = AgentPresetCatalog.all.first?.id ?? "generic"
     @State private var showShare = false
     @State private var shareItems: [Any] = []
@@ -27,15 +29,107 @@ struct AgentConfigPane: View {
         AgentPresetCatalog.all.first { $0.id == presetID } ?? AgentPresetCatalog.all[0]
     }
 
+    /// 当前提供商下的全部模型（配置里全部写进去，客户端就能随时切换）
+    private var providerModels: [String] {
+        model.agentModels(for: provider)
+    }
+
     private var configText: String {
-        model.agentConfigText(preset: preset, baseURL: baseURL, apiKey: apiKey, model: modelName)
+        model.agentConfigText(
+            preset: preset,
+            baseURL: baseURL,
+            apiKey: apiKey,
+            model: modelName,
+            models: providerModels
+        )
     }
 
     var body: some View {
+        providerCard
         onboardingCard
         presetCard
         previewCard
         tipsCard
+            .task { await prepare() }
+    }
+
+    // MARK: 供应商与模型
+
+    private var providerCard: some View {
+        SectionCard {
+            SectionTitle(
+                title: "供应商",
+                trailing: model.agentModelsLoading ? "读取中…" : "共 \(providerModels.count) 个模型"
+            )
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(model.agentProviders, id: \.self) { item in
+                        StudioChip(text: item, active: provider == item) {
+                            provider = item
+                            modelName = model.agentModels(for: item).first ?? ""
+                            model.haptic()
+                        }
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .padding(.top, 8)
+
+            if providerModels.isEmpty {
+                Text("还没读到这个提供商的模型，点右上角刷新；也可以直接在下面手填模型名。")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Aurora.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 8)
+            } else {
+                Text("生成配置时会把这 \(providerModels.count) 个模型一起写进去，客户端里可以直接切换。")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Aurora.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 8)
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(providerModels.prefix(12), id: \.self) { name in
+                            Text(name)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(Aurora.inkSoft)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(Capsule().fill(Aurora.surfaceVariant))
+                        }
+                        if providerModels.count > 12 {
+                            Text("+\(providerModels.count - 12)")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(Aurora.muted)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                        }
+                    }
+                }
+                .padding(.top, 8)
+            }
+
+            HStack(spacing: 8) {
+                MonoButton(text: "刷新模型", icon: "arrow.clockwise", style: .outline) {
+                    Task { await model.loadAgentModelCatalog(force: true) }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.top, 10)
+        }
+    }
+
+    private func prepare() async {
+        await model.loadAgentModelCatalog()
+        if provider.isEmpty, let first = model.agentProviders.first {
+            provider = first
+        }
+        if modelName.isEmpty {
+            modelName = providerModels.first ?? model.assistantModels.first ?? ""
+        }
+        if baseURL.isEmpty { baseURL = model.defaultBaseURL }
     }
 
     // MARK: 一键接入
@@ -109,7 +203,7 @@ struct AgentConfigPane: View {
             }
             .padding(.top, 10)
 
-            if model.assistantModels.isEmpty {
+            if providerModels.isEmpty {
                 field(
                     title: "主力模型",
                     text: $modelName,
@@ -120,8 +214,8 @@ struct AgentConfigPane: View {
             } else {
                 StudioSelect(
                     title: "主力模型",
-                    value: modelName.isEmpty ? (model.assistantModels.first ?? "") : modelName,
-                    options: model.assistantModels.map { .init(id: $0, title: $0, note: nil) }
+                    value: modelName.isEmpty ? (providerModels.first ?? "") : modelName,
+                    options: providerModels.map { .init(id: $0, title: $0, note: nil) }
                 ) { value in
                     modelName = value
                     model.haptic()
@@ -133,9 +227,13 @@ struct AgentConfigPane: View {
                 MonoButton(text: "一键填入", icon: "wand.and.stars", style: .filled) {
                     if baseURL.isEmpty { baseURL = model.defaultBaseURL }
                     if apiKey.isEmpty { apiKey = model.activeAPIKey }
-                    if modelName.isEmpty { modelName = model.assistantModels.first ?? "" }
+                    if provider.isEmpty { provider = model.agentProviders.first ?? "" }
+                    if modelName.isEmpty { modelName = providerModels.first ?? model.assistantModels.first ?? "" }
                     model.haptic(.medium)
-                    model.toast = Toast(text: "已填入 baseURL / 密钥 / 模型", kind: .success)
+                    model.toast = Toast(
+                        text: "已填入 baseURL / 密钥 / 主模型（还会写入 \(providerModels.count) 个模型）",
+                        kind: .success
+                    )
                 }
                 MonoButton(text: "清空", icon: "eraser", style: .outline) {
                     baseURL = ""
@@ -216,8 +314,8 @@ struct AgentConfigPane: View {
                 MonoButton(text: "导出文件", icon: "square.and.arrow.up") {
                     exportFile()
                 }
-                MonoButton(text: "刷新模型", icon: "arrow.clockwise", style: .outline) {
-                    Task { await model.loadAssistantModels() }
+                MonoButton(text: "刷新目录", icon: "arrow.clockwise", style: .outline) {
+                    Task { await model.loadAgentModelCatalog(force: true) }
                 }
             }
             .padding(.top, 12)

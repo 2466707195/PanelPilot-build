@@ -160,12 +160,28 @@ final class AppModel: ObservableObject {
     @Published var accountsError: String?
     @Published var accountsUpdatedAt: Date?
     @Published var balances: JSONValue?
+    /// 账号 id → 可读余额（快照或单账号查询的结果）
+    @Published var balanceByAccount: [String: AccountBalance] = [:]
+    @Published var balancesUpdatedAt: Date?
+    @Published var balanceError: String?
+    /// 正在单独查询余额的账号 id
+    @Published var balanceBusyID: String?
     @Published var balancesLoading = false
     @Published var currentAccountID: String?
 
     // MARK: - 助手输入框
 
     @Published var assistantModels: [String] = []
+    /// Agent 配置用：提供商 → 该提供商下全部模型
+    @Published var agentProviders: [String] = []
+    @Published var agentModelsByProvider: [String: [String]] = [:]
+    @Published var agentModelsLoading = false
+    /// 是否把工具声明给模型（默认关：很多网关/模型对 `tools` 支持不完整，
+    /// 开着会让请求一直挂着不返回。需要「调用工具中」那种卡片时再打开。）
+    @Published var assistantToolsEnabled: Bool =
+        UserDefaults.standard.object(forKey: "panel.assistant.tools") as? Bool ?? false {
+        didSet { UserDefaults.standard.set(assistantToolsEnabled, forKey: "panel.assistant.tools") }
+    }
     @Published var attachments: [ChatAttachment] = []
     @Published var assistantAccess: AssistantAccess = .full
     // MARK: - 签到中心
@@ -750,9 +766,11 @@ final class AppModel: ObservableObject {
         resetRuntimeState()
     }
 
+    /// 只在这个值**真的变了**的时候才发布：每 12 秒轮询一次，
+    /// 无脑赋值会让五个 Tab 的全部视图重算一遍，滚动时看起来就是「掉帧」。
     private func apply(health newValue: PanelHealth, latency value: Int) {
-        health = newValue
-        latency = value
+        if health != newValue { health = newValue }
+        if latency != value { latency = value }
         lastChecked = Date()
     }
 
@@ -1561,6 +1579,8 @@ final class AppModel: ObservableObject {
     private func runAgent(answerID: UUID, messages start: [[String: Any]]) async {
         var messages = start
         var round = 0
+        /// 这一轮对话里工具被网关拒绝了；后续都走纯文本
+        var toolsDisabledByFailure = false
 
         while round < 4, !Task.isCancelled {
             round += 1
@@ -1574,13 +1594,19 @@ final class AppModel: ObservableObject {
             if !assistantModel.trimmingCharacters(in: .whitespaces).isEmpty {
                 body["model"] = assistantModel.trimmingCharacters(in: .whitespaces)
             }
-            body["tools"] = AssistantToolCatalog.payload
-            body["tool_choice"] = "auto"
+            // 工具是可选的：关掉时就是最普通的对话，任何网关都能回。
+            // 打开后如果这一轮直接失败（不支持 tools / 参数被拒），下一次自动去掉工具再试。
+            let withTools = assistantToolsEnabled && !toolsDisabledByFailure
+            if withTools {
+                body["tools"] = AssistantToolCatalog.payload
+                body["tool_choice"] = "auto"
+            }
 
             do {
                 try await api.streamChat(
                     "/api/assistant/chat",
                     body: body,
+                    timeout: 60,
                     onText: { piece in
                         Task { @MainActor [weak self] in
                             self?.appendAssistant(piece, to: answerID)
@@ -1594,6 +1620,12 @@ final class AppModel: ObservableObject {
                 let apiError = error as? PanelAPIError
                 if apiError?.isAuthFailure == true, round == 1 {
                     _ = await loginIfNeeded(force: true)
+                    round -= 1
+                    continue
+                }
+                // 带工具时失败：立刻退回普通对话重试一轮，别让用户对着省略号等
+                if withTools {
+                    toolsDisabledByFailure = true
                     round -= 1
                     continue
                 }
@@ -1756,7 +1788,9 @@ final class AppModel: ObservableObject {
                 ? "请求失败：\(message)"
                 : chat[index].text + "\n\n（中断：\(message)）"
         } else if chat[index].text.isEmpty {
-            chat[index].text = "面板没有返回内容。"
+            chat[index].text = chat[index].steps.isEmpty
+                ? "网关没有返回内容。可能是这个模型不支持当前请求参数，去输入框的「工具」关掉后再试一次。"
+                : "工具已经执行完，但模型没有继续输出。可以把「工具」关掉再问一遍。"
         }
     }
 
@@ -1885,7 +1919,7 @@ final class AppModel: ObservableObject {
         pollTask?.cancel()
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                try? await Task.sleep(nanoseconds: 12_000_000_000)
                 guard let self else { return }
                 if Task.isCancelled { return }
                 guard self.autoRefresh, self.isConfigured else { continue }

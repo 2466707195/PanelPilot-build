@@ -82,11 +82,7 @@ struct AccountsScreen: View {
             AddAccountScreen()
         }
         .sheet(isPresented: $showBalances) {
-            JSONDetailSheet(
-                title: "账号余额",
-                json: model.balances ?? .null,
-                onCopy: { text in model.copy(text) }
-            )
+            BalanceSheet()
         }
     }
 
@@ -103,8 +99,8 @@ struct AccountsScreen: View {
 
             Button {
                 Task {
+                    showBalances = true
                     await model.queryBalances()
-                    if model.balances != nil { showBalances = true }
                 }
             } label: { Label("查询余额", systemImage: "creditcard") }
 
@@ -310,8 +306,10 @@ struct AccountDetailSheet: View {
         if let proxyText { rows.append(("代理方式", proxyText)) }
         if let balance = live.balance, !balance.isEmpty {
             rows.append(("余额", balance))
+        } else if let parsed = model.balanceByAccount[live.id] {
+            rows.append(("余额", parsed.primary + (parsed.secondary.map { "（\($0)）" } ?? "")))
         } else {
-            rows.append(("余额", "未提供"))
+            rows.append(("余额", "未查询"))
         }
         if let expires = live.expiresAt, !expires.isEmpty {
             rows.append(("有效期", expires))

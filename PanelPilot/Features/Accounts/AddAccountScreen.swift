@@ -318,7 +318,40 @@ struct AddAccountScreen: View {
 
     // MARK: 手机号
 
+    /// 手机号登录只支持 AutoClaw（网关的登录地区只有 autoclaw / autoclaw-intl）
+    private func smsSupported(_ provider: ProviderSpec) -> Bool {
+        provider.id == "autoclaw" || provider.id == "autoclaw-intl"
+    }
+
+    @ViewBuilder
     private func smsFlow(_ provider: ProviderSpec) -> some View {
+        if !smsSupported(provider) {
+            SectionCard {
+                SectionTitle(title: "这个提供商不支持手机号登录")
+                Text("手机号验证码只对 AutoClaw 开放。\(provider.name) 请在电脑的桌面面板登录一次，或用「导入文件」把现成配置带过来。")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Aurora.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 6)
+                WrapLayout(spacing: 8, lineSpacing: 8) {
+                    MonoButton(text: "改用网页登录", icon: "globe", style: .filled) {
+                        mode = .web
+                        selected = provider
+                        Task { await model.loadLoginMethods(provider: provider.id) }
+                    }
+                    MonoButton(text: "改用导入文件", icon: "doc.badge.plus", style: .tonal) {
+                        mode = .file
+                        selected = provider
+                    }
+                }
+                .padding(.top, 10)
+            }
+        } else {
+            smsForm(provider)
+        }
+    }
+
+    private func smsForm(_ provider: ProviderSpec) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             field("手机号", text: $phone, placeholder: "11 位手机号", keyboard: .phonePad)
 

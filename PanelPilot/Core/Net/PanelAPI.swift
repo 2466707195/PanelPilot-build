@@ -193,13 +193,14 @@ struct PanelAPI {
     func streamChat(
         _ path: String,
         body: [String: Any],
+        timeout: TimeInterval = 90,
         onText: @escaping (String) -> Void,
         onToolCalls: (([PanelToolCall]) -> Void)? = nil
     ) async throws {
         guard let url = url(for: path) else { throw PanelAPIError.notConfigured }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 120
+        request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(token, forHTTPHeaderField: "x-panel-token")

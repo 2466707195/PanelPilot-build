@@ -36,6 +36,15 @@ enum ProviderAssets {
 
     // 查过一次就记住，避免每帧都问一次 bundle
     private static var cache: [String: String] = [:]
+    /// 解码后的图也缓存：长列表滚动时不再重复解码
+    private static var images: [String: UIImage] = [:]
+
+    static func image(_ name: String) -> UIImage? {
+        if let hit = images[name] { return hit }
+        guard let image = UIImage(named: name) else { return nil }
+        images[name] = image
+        return image
+    }
 
     static func assetName(for provider: String) -> String? {
         let key = provider
@@ -54,7 +63,7 @@ enum ProviderAssets {
             candidates.append(String(key[key.startIndex..<dash]))
         }
 
-        for name in candidates where UIImage(named: name) != nil {
+        for name in candidates where image(name) != nil {
             cache[key] = name
             return name
         }
@@ -76,10 +85,11 @@ struct ProviderIcon: View {
 
     var body: some View {
         Group {
-            if let asset = ProviderAssets.assetName(for: provider) {
-                Image(asset)
+            if let asset = ProviderAssets.assetName(for: provider),
+               let image = ProviderAssets.image(asset) {
+                Image(uiImage: image)
                     .resizable()
-                    .interpolation(.high)
+                    .interpolation(.medium)
                     .scaledToFill()
             } else {
                 ZStack {

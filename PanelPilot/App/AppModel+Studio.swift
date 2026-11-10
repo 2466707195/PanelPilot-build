@@ -184,20 +184,48 @@ extension AppModel {
     func queryBalances() async {
         guard activeProfile?.isValid == true else { return }
         balancesLoading = true
+        balanceError = nil
         do {
-            let response = try await authenticatedRequest("GET", "/api/accounts/usage", timeout: 40)
+            // 快照接口：一次拿全部账号最近一次的余额（不打上游、很快）
+            let response = try await authenticatedRequest("GET", "/api/accounts/usage/snapshot", timeout: 40)
             balances = response.json
+            let parsed = AccountBalanceParser.snapshot(response.json)
+            if parsed.isEmpty {
+                balanceError = "网关没有返回任何余额数据；可能是这个版本还没有余额查询插件。"
+            }
+            balanceByAccount.merge(parsed) { _, new in new }
+            balancesUpdatedAt = Date()
             noteLocalCompute()
-            toast = Toast(text: "余额已更新", kind: .success)
-            await loadAccounts()
+            toast = Toast(text: "余额已更新（\(parsed.count) 个账号）", kind: parsed.isEmpty ? .warning : .success)
         } catch {
             let apiError = error as? PanelAPIError
-            toast = Toast(
-                text: "查询余额失败：\(apiError?.errorDescription ?? error.localizedDescription)",
-                kind: .error
-            )
+            balanceError = apiError?.errorDescription ?? error.localizedDescription
+            toast = Toast(text: "查询余额失败：\(balanceError ?? "")", kind: .error)
         }
         balancesLoading = false
+    }
+
+    /// 单账号实时查询：`GET /api/accounts/usage?id=`（会真的打一次上游，慢一点）
+    func refreshBalance(id: String) async {
+        guard activeProfile?.isValid == true, !id.isEmpty else { return }
+        balanceBusyID = id
+        do {
+            let encoded = id.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? id
+            let response = try await authenticatedRequest(
+                "GET", "/api/accounts/usage?id=\(encoded)", timeout: 60
+            )
+            let parsed = AccountBalanceParser.single(response.json, id: id)
+            balanceByAccount[id] = parsed
+            balancesUpdatedAt = Date()
+            if parsed.hasError {
+                toast = Toast(text: parsed.error ?? "上游返回了错误", kind: .warning)
+            }
+        } catch {
+            let apiError = error as? PanelAPIError
+            balanceByAccount[id] = AccountBalance(id: id, primary: "查询失败", error: apiError?.errorDescription ?? error.localizedDescription)
+            toast = Toast(text: "查询失败：\(apiError?.errorDescription ?? error.localizedDescription)", kind: .error)
+        }
+        balanceBusyID = nil
     }
 
     /// 全部账号签到：`POST /api/accounts/checkin`
@@ -300,7 +328,7 @@ struct AgentPreset: Identifiable, Equatable {
     var target: String
     var note: String
 
-    func object(baseURL: String, apiKey: String, model: String) -> [String: Any] {
+    func object(baseURL: String, apiKey: String, model: String, models: [String] = []) -> [String: Any] {
         switch id {
         case "claude":
             var env: [String: Any] = [
@@ -308,7 +336,9 @@ struct AgentPreset: Identifiable, Equatable {
                 "ANTHROPIC_AUTH_TOKEN": apiKey
             ]
             if !model.isEmpty { env["ANTHROPIC_MODEL"] = model }
-            return ["env": env]
+            var root: [String: Any] = ["env": env]
+            if !models.isEmpty { root["models"] = models }
+            return root
         case "codex":
             var provider: [String: Any] = [
                 "name": "Agent2API",
@@ -321,6 +351,7 @@ struct AgentPreset: Identifiable, Equatable {
                 "model_providers": ["agent2api": provider]
             ]
             if !model.isEmpty { root["model"] = model }
+            if !models.isEmpty { root["models"] = models }
             return root
         case "opencode":
             return [
@@ -331,7 +362,7 @@ struct AgentPreset: Identifiable, Equatable {
                             "baseURL": baseURL.hasSuffix("/v1") ? baseURL : baseURL + "/v1",
                             "apiKey": apiKey
                         ],
-                        "models": model.isEmpty ? [:] : [model: ["name": model]]
+                        "models": Dictionary(uniqueKeysWithValues: (models.isEmpty ? (model.isEmpty ? [] : [model]) : models).map { ($0, ["name": $0]) })
                     ]
                 ]
             ]
@@ -340,9 +371,11 @@ struct AgentPreset: Identifiable, Equatable {
                 "base_url": baseURL,
                 "api_key": apiKey
             ]
-            if !model.isEmpty {
-                root["model"] = model
-                root["models"] = [model]
+            if !model.isEmpty { root["model"] = model }
+            let list = models.isEmpty ? (model.isEmpty ? [] : [model]) : models
+            if !list.isEmpty {
+                root["models"] = list
+                root["default_model"] = model.isEmpty ? (list.first ?? "") : model
             }
             root["provider"] = "openai-compatible"
             return root
@@ -378,6 +411,43 @@ enum AgentPresetCatalog {
 
 extension AppModel {
 
+    /// 把 `/api/models/manage` 按提供商分组，供「Agent 配置」直接选。
+    func loadAgentModelCatalog(force: Bool = false) async {
+        guard activeProfile?.isValid == true else { return }
+        if agentModelsLoading { return }
+        if !force, !agentModelsByProvider.isEmpty { return }
+
+        agentModelsLoading = true
+        do {
+            let response = try await authenticatedRequest("GET", "/api/models/manage", timeout: 40)
+            var grouped: [String: [String]] = [:]
+            for row in JSONRows.from(response.json) {
+                guard let id = row.firstString(["id", "model", "name"]) else { continue }
+                let provider = row.firstString(["provider", "providerId"]) ?? "全部"
+                grouped[provider, default: []].append(id)
+            }
+            for key in grouped.keys {
+                grouped[key] = Array(Set(grouped[key] ?? [])).sorted()
+            }
+            agentModelsByProvider = grouped
+            agentProviders = grouped.keys.sorted()
+            noteLocalCompute()
+        } catch {
+            // 拿不到就退回助手模型列表，不挡用户
+            if agentModelsByProvider.isEmpty, !assistantModels.isEmpty {
+                agentModelsByProvider = ["全部": assistantModels]
+                agentProviders = ["全部"]
+            }
+        }
+        agentModelsLoading = false
+    }
+
+    /// 当前选中的提供商下所有模型
+    func agentModels(for provider: String) -> [String] {
+        if provider.isEmpty { return assistantModels }
+        return agentModelsByProvider[provider] ?? assistantModels
+    }
+
     /// 接入用的默认 baseURL：面板地址 + `/v1`（已经是 /v1 就不重复加）。
     var defaultBaseURL: String {
         guard let profile = activeProfile else { return "" }
@@ -390,12 +460,14 @@ extension AppModel {
         preset: AgentPreset,
         baseURL: String,
         apiKey: String,
-        model: String
+        model: String,
+        models: [String] = []
     ) -> String {
         let object = preset.object(
             baseURL: baseURL.trimmingCharacters(in: .whitespacesAndNewlines),
             apiKey: apiKey.trimmingCharacters(in: .whitespacesAndNewlines),
-            model: model.trimmingCharacters(in: .whitespacesAndNewlines)
+            model: model.trimmingCharacters(in: .whitespacesAndNewlines),
+            models: models
         )
         guard JSONSerialization.isValidJSONObject(object),
               let data = try? JSONSerialization.data(
@@ -523,6 +595,23 @@ extension AppModel {
 
     // MARK: 网页登录
 
+    /// 把网关的登录报错翻译成「用户下一步该干嘛」
+    private func friendlyLoginError(_ text: String) -> String {
+        if text.contains("尚未申报动态登录方式") {
+            return "这个提供商没有网页登录入口。请在电脑的桌面面板里登录一次，或用「导入文件」把配置带过来。"
+        }
+        if text.contains("未知的登录地区") || text.contains("只支持 autoclaw") {
+            return "手机号登录只支持 AutoClaw（国内/国际版）。其他提供商请用「网页登录」或「导入文件」。"
+        }
+        if text.contains("Not found") || text.contains("404") {
+            return "这个网关版本还没有开通这条登录通道（HTTP 404），请升级网关后再试。"
+        }
+        if text.contains("没有可用登录态") {
+            return "网关还没有可用的浏览器登录态：先在桌面面板登录一次，再回来重试。"
+        }
+        return text
+    }
+
     func loadLoginMethods(provider: String) async {
         loginMethods = []
         loginError = nil
@@ -533,11 +622,11 @@ extension AppModel {
             )
             loginMethods = LoginMethodsParser.items(response.json)
             if loginMethods.isEmpty {
-                loginError = "这个提供商没有返回可用的登录方式"
+                loginError = "这个提供商没有返回可用的登录方式（可能需要在桌面面板登录）"
             }
         } catch {
             let apiError = error as? PanelAPIError
-            loginError = apiError?.errorDescription ?? error.localizedDescription
+            loginError = friendlyLoginError(apiError?.errorDescription ?? error.localizedDescription)
         }
     }
 
@@ -655,7 +744,7 @@ extension AppModel {
             return true
         } catch {
             let apiError = error as? PanelAPIError
-            loginError = apiError?.errorDescription ?? error.localizedDescription
+            loginError = friendlyLoginError(apiError?.errorDescription ?? error.localizedDescription)
             return false
         }
     }
@@ -690,7 +779,7 @@ extension AppModel {
             return true
         } catch {
             let apiError = error as? PanelAPIError
-            loginError = apiError?.errorDescription ?? error.localizedDescription
+            loginError = friendlyLoginError(apiError?.errorDescription ?? error.localizedDescription)
             return false
         }
     }

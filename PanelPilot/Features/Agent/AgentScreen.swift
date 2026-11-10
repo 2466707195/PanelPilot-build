@@ -107,6 +107,8 @@ private struct AssistantPane: View {
     @ObservedObject private var look = AppearanceStore.shared
 
     @State private var input: String = ""
+    /// 输入框焦点：发完消息立刻收起键盘
+    @FocusState private var inputFocused: Bool
     @State private var photoItem: PhotosPickerItem?
     @State private var showPhotoPicker = false
     @State private var showFiles = false
@@ -145,7 +147,9 @@ private struct AssistantPane: View {
                 .frame(maxWidth: .infinity)
             }
             .scrollIndicators(.hidden)
-            .scrollDismissesKeyboard(.interactively)
+            // 一滑就收键盘；点空白处也收
+            .scrollDismissesKeyboard(.immediately)
+            .onTapGesture { inputFocused = false }
             .onChange(of: model.chat.count) { _ in
                 withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) }
             }
@@ -199,6 +203,8 @@ private struct AssistantPane: View {
             }
 
             TextField("发消息或做任务…", text: $input, axis: .vertical)
+                .focused($inputFocused)
+                .submitLabel(.send)
                 .font(AuroraFont.bodyMedium)
                 .foregroundStyle(Aurora.ink)
                 .lineLimit(1...5)
@@ -231,6 +237,31 @@ private struct AssistantPane: View {
                         .frame(width: 32, height: 32)
                         .background(Circle().fill(Aurora.surfaceVariant))
                 }
+
+                // 工具开关：关掉就是纯文本对话（任何网关都能回）。
+                // 打开后模型可以调面板接口，气泡里会出现「调用中…」卡片。
+                Button {
+                    model.assistantToolsEnabled.toggle()
+                    model.haptic()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "wrench.and.screwdriver")
+                            .font(.system(size: 10, weight: .bold))
+                        Text("工具")
+                            .font(.system(size: 11.5, weight: .semibold))
+                    }
+                    .foregroundStyle(model.assistantToolsEnabled ? Aurora.brand : Aurora.inkSoft)
+                    .padding(.horizontal, 8)
+                    .frame(height: 28)
+                    .background(
+                        Capsule().fill(
+                            model.assistantToolsEnabled
+                                ? Aurora.brand.opacity(0.12)
+                                : Aurora.surfaceVariant
+                        )
+                    )
+                }
+                .buttonStyle(.plain)
 
                 Menu {
                     ForEach(AssistantAccess.allCases) { access in
@@ -423,6 +454,7 @@ private struct AssistantPane: View {
         }
         model.sendChat(trimmed)
         input = ""
+        inputFocused = false
         model.haptic()
     }
 
