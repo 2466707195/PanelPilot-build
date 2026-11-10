@@ -28,27 +28,30 @@ struct RootView: View {
     @State private var appliedStart = false
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            Aurora.canvas.ignoresSafeArea()
+        TabView(selection: $tab) {
+            OverviewScreen()
+                .tabItem { Label("概览", systemImage: "square.grid.2x2") }
+                .tag(PanelTab.overview)
 
-            Group {
-                switch tab {
-                case .overview: OverviewScreen()
-                case .routing: RoutingScreen()
-                case .agent: AgentScreen()
-                case .accounts: AccountsScreen()
-                case .settings: SettingsScreen()
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            RoutingScreen()
+                .tabItem { Label("路由", systemImage: "arrow.triangle.branch") }
+                .tag(PanelTab.routing)
 
-            FloatingIsland {
-                IslandTabBar(selection: $tab)
-            }
+            AgentScreen()
+                .tabItem { Label("Agent", systemImage: "sparkles") }
+                .tag(PanelTab.agent)
+
+            AccountsScreen()
+                .tabItem { Label("账号", systemImage: "person.2") }
+                .tag(PanelTab.accounts)
+
+            SettingsScreen()
+                .tabItem { Label("设置", systemImage: "slider.horizontal.3") }
+                .tag(PanelTab.settings)
         }
-        .overlay(alignment: .top) {
-            ToastOverlay()
-        }
+        // 底栏交给系统：iOS 26+ 自动是 Liquid Glass + 系统的选中指示（会自己放大/滑动），
+        // 选中态固定近黑，未选中交给系统灰。不要自绘、不要给底栏设背景。
+        .tint(Aurora.ink)
         .onReceive(NotificationCenter.default.publisher(for: .openConnectionSettings)) { _ in
             tab = .settings
         }

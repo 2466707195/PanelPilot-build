@@ -187,10 +187,14 @@ struct PanelAPI {
     /// 事件结构各版本不完全一致，所以不按固定字段解码：从每个事件的 JSON 里
     /// 递归找第一段文本增量（`delta.content` / `content` / `text` / `delta`），
     /// 找到什么就用什么，找不到就跳过 —— 宁可少显示一段，也不整轮报错。
+    /// 流式聊天。除了文字增量，还会把模型要调的**工具**回调出来（`onToolCalls`）：
+    /// 面板/网关用的是 OpenAI 的 `tools` 协议，工具由客户端执行，
+    /// 所以这里只负责把 `tool_calls` 拼完整交出去。
     func streamChat(
         _ path: String,
         body: [String: Any],
-        onText: @escaping (String) -> Void
+        onText: @escaping (String) -> Void,
+        onToolCalls: (([PanelToolCall]) -> Void)? = nil
     ) async throws {
         guard let url = url(for: path) else { throw PanelAPIError.notConfigured }
         var request = URLRequest(url: url)
@@ -220,6 +224,14 @@ struct PanelAPI {
             throw PanelAPIError.http(http.statusCode, message)
         }
 
+        var toolCalls: [Int: PanelToolCall] = [:]
+
+        func flushTools() {
+            guard let onToolCalls, !toolCalls.isEmpty else { return }
+            let calls = toolCalls.keys.sorted().compactMap { toolCalls[$0] }
+            onToolCalls(calls)
+        }
+
         for try await line in bytes.lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             guard !trimmed.isEmpty else { continue }
@@ -233,7 +245,59 @@ struct PanelAPI {
             if let piece = PanelAPI.deltaText(in: json), !piece.isEmpty {
                 onText(piece)
             }
+            if PanelAPI.mergeToolCalls(in: json, into: &toolCalls) {
+                flushTools()
+            }
         }
+        flushTools()
+    }
+
+    /// 把这一帧里的 `tool_calls` 增量合并进 `calls`。返回是否有更新。
+    @discardableResult
+    static func mergeToolCalls(in value: JSONValue, into calls: inout [Int: PanelToolCall]) -> Bool {
+        // 非流式兜底：choices[0].message.tool_calls
+        if let choices = value.value("choices")?.arrayValue, let first = choices.first {
+            if let list = first.value("message")?.arr("tool_calls") {
+                for (offset, item) in list.enumerated() {
+                    merge(item, index: item.int("index") ?? offset, into: &calls)
+                }
+                return !list.isEmpty
+            }
+            guard let delta = first.value("delta"), let list = delta.arr("tool_calls") else { return false }
+            for (offset, item) in list.enumerated() {
+                merge(item, index: item.int("index") ?? offset, into: &calls)
+            }
+            return !list.isEmpty
+        }
+        // 面板自定义事件：{type:"tool_calls", calls:[...]}
+        if let list = value.arr("calls") ?? value.arr("tool_calls") {
+            for (offset, item) in list.enumerated() {
+                merge(item, index: item.int("index") ?? offset, into: &calls)
+            }
+            return !list.isEmpty
+        }
+        return false
+    }
+
+    private static func merge(_ item: JSONValue, index: Int, into calls: inout [Int: PanelToolCall]) {
+        var call = calls[index] ?? PanelToolCall(id: "", name: "", arguments: "")
+        if let id = item.firstString(["id"]), !id.isEmpty { call.id = id }
+        let function = item.obj("function")
+        if let name = function?.firstString(["name"]) ?? item.firstString(["name"]), !name.isEmpty {
+            call.name = name
+        }
+        if let args = function?.firstString(["arguments"]) ?? item.firstString(["arguments"]) {
+            // 有的实现一次给全量，有的给增量：给了全量就覆盖
+            if args.count >= call.arguments.count, args.hasPrefix(call.arguments) {
+                call.arguments = args
+            } else {
+                call.arguments += args
+            }
+        }
+        if call.id.isEmpty {
+            call.id = "call_\(index)"
+        }
+        calls[index] = call
     }
 
     /// 从任意结构的事件里挑出第一段文本增量。
@@ -457,5 +521,24 @@ struct PanelAPI {
     /// 把任意列表接口的结果压成行数组（实现见 `JSONRows`）。
     static func rows(from json: JSONValue) -> [JSONValue] {
         JSONRows.from(json)
+    }
+}
+
+
+// MARK: - 工具调用
+
+/// 模型要求执行的一次工具调用。`arguments` 是原始 JSON 串。
+struct PanelToolCall: Identifiable, Equatable {
+
+    var id: String
+    var name: String
+    var arguments: String
+
+    var json: [String: Any] {
+        guard let data = arguments.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
+        }
+        return object
     }
 }

@@ -59,6 +59,7 @@ struct OverviewScreen: View {
             VStack(spacing: 0) {
                 AppTopBar(title: "概览") {
                     HStack(spacing: 6) {
+                        ServerChip()
                         StatusPill(text: model.state.title, color: model.state.tint)
                         GlassIconButton(
                             systemIcon: "arrow.clockwise",
@@ -633,8 +634,12 @@ struct OverviewScreen: View {
                 MonoButton(text: "同步面板", icon: "arrow.clockwise", style: .filled) {
                     Task { await model.refreshAll() }
                 }
-                MonoButton(text: "立即签到", icon: "checkmark.seal", style: .tonal) {
-                    Task { await model.runCommand("立即签到", path: "/api/auto-checkin/run") }
+                MonoButton(
+                    text: model.checkinBusy == "all" ? "签到中…" : "立即签到",
+                    icon: "checkmark.seal",
+                    style: .tonal
+                ) {
+                    Task { await model.checkinAll() }
                 }
                 MonoButton(text: "刷新模型", icon: "cpu", style: .tonal) {
                     Task { await model.runCommand("刷新模型", path: "/api/models/refresh") }

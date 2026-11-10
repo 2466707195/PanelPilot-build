@@ -29,31 +29,9 @@ struct AccountsScreen: View {
 
             VStack(spacing: 0) {
                 AppTopBar(title: "账号") {
-                    Menu {
-                        Button {
-                            Task { await model.loadAccounts(force: true) }
-                        } label: { Label("刷新", systemImage: "arrow.clockwise") }
-
-                        Button {
-                            showAddAccount = true
-                        } label: { Label("添加账号", systemImage: "plus") }
-
-                        Button {
-                            Task {
-                                await model.queryBalances()
-                                if model.balances != nil { showBalances = true }
-                            }
-                        } label: { Label("查询余额", systemImage: "creditcard") }
-
-                        Button {
-                            Task { await model.checkinAllAccounts() }
-                        } label: { Label("签到", systemImage: "checkmark.seal") }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundStyle(Aurora.inkSoft)
-                            .frame(width: 32, height: 32)
-                            .background(Circle().fill(Aurora.surfaceVariant.opacity(0.8)))
+                    HStack(spacing: 6) {
+                        ServerChip()
+                        accountMenu
                     }
                 }
 
@@ -109,6 +87,42 @@ struct AccountsScreen: View {
                 json: model.balances ?? .null,
                 onCopy: { text in model.copy(text) }
             )
+        }
+    }
+
+    /// 右上角三个点：刷新 / 添加账号 / 查询余额 / 全部签到 / 切换服务器
+    private var accountMenu: some View {
+        Menu {
+            Button {
+                Task { await model.loadAccounts(force: true) }
+            } label: { Label("刷新", systemImage: "arrow.clockwise") }
+
+            Button {
+                showAddAccount = true
+            } label: { Label("添加账号", systemImage: "plus") }
+
+            Button {
+                Task {
+                    await model.queryBalances()
+                    if model.balances != nil { showBalances = true }
+                }
+            } label: { Label("查询余额", systemImage: "creditcard") }
+
+            Button {
+                Task { await model.checkinAll() }
+            } label: { Label("全部签到", systemImage: "checkmark.seal") }
+
+            Divider()
+
+            Button {
+                NotificationCenter.default.post(name: .openConnectionSettings, object: nil)
+            } label: { Label("切换服务器", systemImage: "server.rack") }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(Aurora.inkSoft)
+                .frame(width: 32, height: 32)
+                .background(Circle().fill(Aurora.surfaceVariant.opacity(0.8)))
         }
     }
 
@@ -249,7 +263,7 @@ struct AccountsScreen: View {
     }
 }
 
-// MARK: - 账号详情
+// MARK: - 账号详情（说人话，不铺原始字段）
 
 struct AccountDetailSheet: View {
 
@@ -259,87 +273,184 @@ struct AccountDetailSheet: View {
     let account: AccountItem
 
     private var live: AccountItem { model.account(with: account.id) ?? account }
+    private var checkin: CheckinAccount? { model.checkin?.account(id: account.id) }
+
+    /// 一句话总结：把最要紧的几件事按人话拼起来
+    private var summary: String {
+        var parts: [String] = []
+        if !live.enabled {
+            parts.append("这个账号已停用，不参与路由")
+        } else if live.healthy {
+            parts.append("账号可用，正在参与路由")
+        } else {
+            parts.append("账号状态异常（\(live.statusText)）")
+        }
+        if let proxyText { parts.append("走 \(proxyText)") }
+        if let balance = live.balance, !balance.isEmpty { parts.append("余额 \(balance)") }
+        if let expires = live.expiresAt, !expires.isEmpty { parts.append("\(expires) 到期") }
+        if let checkin {
+            parts.append(checkin.status.signed ? "今天已签到" : "今天还没签")
+        }
+        return parts.joined(separator: "，") + "。"
+    }
+
+    /// 代理方式的通俗说法
+    private var proxyText: String? {
+        guard let proxy = live.proxy?.trimmingCharacters(in: .whitespaces), !proxy.isEmpty else { return nil }
+        let lower = proxy.lowercased()
+        if lower.contains("direct") || proxy == "直连" { return "直连（不走代理）" }
+        if lower.hasPrefix("http") { return "HTTP 代理 \(proxy)" }
+        if lower.hasPrefix("socks") { return "SOCKS 代理 \(proxy)" }
+        return proxy
+    }
+
+    private var rows: [(String, String)] {
+        var rows: [(String, String)] = []
+        rows.append(("状态", live.statusText))
+        if let proxyText { rows.append(("代理方式", proxyText)) }
+        if let balance = live.balance, !balance.isEmpty {
+            rows.append(("余额", balance))
+        } else {
+            rows.append(("余额", "未提供"))
+        }
+        if let expires = live.expiresAt, !expires.isEmpty {
+            rows.append(("有效期", expires))
+        } else {
+            rows.append(("有效期", "长期有效 / 未提供"))
+        }
+        if let checkin {
+            rows.append(("今日签到", checkin.status.label))
+        }
+        if live.modelCount > 0 {
+            rows.append(("可用模型", "\(live.modelCount) 个"))
+        }
+        return rows
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    HStack(spacing: 12) {
-                        ProviderIcon(
-                            provider: live.provider,
-                            fallback: live.name,
-                            size: 48
-                        )
-
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(live.name)
-                                .font(.system(size: 17, weight: .bold))
-                                .foregroundStyle(Aurora.ink)
-                                .lineLimit(1)
-                            Text(live.providerLabel)
-                                .font(.system(size: 11.5))
-                                .foregroundStyle(Aurora.muted)
-                        }
-                        Spacer(minLength: 4)
-                        StudioTag(
-                            text: live.statusText,
-                            tint: live.healthy ? Aurora.success : Aurora.rose
-                        )
-                    }
-
-                    VStack(spacing: 0) {
-                        ForEach(Array(live.detailRows.enumerated()), id: \.offset) { _, row in
-                            KeyValueRow(label: row.0, value: row.1, mono: row.0 == "有效期")
-                        }
-                    }
-                    .padding(12)
-                    .background(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(Color.white)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(Aurora.line, lineWidth: 1)
-                    )
-
-                    WrapLayout(spacing: 8, lineSpacing: 8) {
-                        MonoButton(text: "设为当前", icon: "arrow.right.circle", style: .filled) {
-                            Task {
-                                await model.setCurrentAccount(live.id)
-                                dismiss()
-                            }
-                        }
-                        MonoButton(text: "刷新凭证", icon: "arrow.clockwise") {
-                            Task { await model.refreshAccountToken(live.id) }
-                        }
-                        MonoButton(text: "账号签到", icon: "checkmark.seal") {
-                            Task { await model.checkinAccount(live.id) }
-                        }
-                        MonoButton(
-                            text: live.enabled ? "停用" : "启用",
-                            icon: live.enabled ? "pause.circle" : "play.circle",
-                            style: live.enabled ? .danger : .tonal
-                        ) {
-                            Task {
-                                await model.setAccountEnabled(live, enabled: !live.enabled)
-                                dismiss()
-                            }
-                        }
-                    }
-
-                    SectionCard {
-                        SectionTitle(title: "原始字段", trailing: "\(live.raw.objectValue?.count ?? 0) 项")
-                        SmartFieldList(json: live.raw, onCopy: { text in model.copy(text) })
-                    }
+                    header
+                    summaryCard
+                    detailCard
+                    actions
                 }
                 .padding(16)
             }
+            .scrollIndicators(.hidden)
             .background(AuroraBackdrop())
             .navigationTitle("账号详情")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("关闭") { dismiss() }
+                }
+            }
+            .task {
+                if model.checkin == nil { await model.loadCheckin() }
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 12) {
+            ProviderIcon(provider: live.provider, fallback: live.name, size: 48)
+                .opacity(live.enabled ? 1 : 0.5)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(live.name)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(Aurora.ink)
+                    .lineLimit(1)
+                Text(live.providerLabel.isEmpty ? live.provider : live.providerLabel)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Aurora.muted)
+            }
+
+            Spacer(minLength: 4)
+
+            if live.isCurrent {
+                Text("当前账号")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Aurora.brand)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(Aurora.brand.opacity(0.10)))
+            }
+        }
+    }
+
+    private var summaryCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(live.healthy ? Aurora.success : (live.enabled ? Aurora.warning : Aurora.muted))
+                    .frame(width: 7, height: 7)
+                Text(summary)
+                    .font(.system(size: 13.5))
+                    .foregroundStyle(Aurora.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: AuroraMetrics.cardRadius, style: .continuous)
+                .fill(Aurora.surface)
+        )
+    }
+
+    private var detailCard: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+                if index > 0 {
+                    Rectangle().fill(Aurora.hairline).frame(height: 1)
+                }
+                HStack(spacing: 10) {
+                    Text(row.0)
+                        .font(.system(size: 13.5))
+                        .foregroundStyle(Aurora.inkSoft)
+                    Spacer(minLength: 8)
+                    Text(row.1)
+                        .font(.system(size: 13.5, weight: .medium))
+                        .foregroundStyle(Aurora.ink)
+                        .multilineTextAlignment(.trailing)
+                }
+                .padding(.vertical, 11)
+            }
+        }
+        .padding(.horizontal, 14)
+        .background(
+            RoundedRectangle(cornerRadius: AuroraMetrics.cardRadius, style: .continuous)
+                .fill(Aurora.surface)
+        )
+    }
+
+    private var actions: some View {
+        WrapLayout(spacing: 8, lineSpacing: 8) {
+            if !live.isCurrent {
+                MonoButton(text: "设为当前", icon: "arrow.right.circle", style: .filled) {
+                    Task {
+                        await model.setCurrentAccount(live.id)
+                        dismiss()
+                    }
+                }
+            }
+            MonoButton(text: "签到", icon: "checkmark.seal", style: .tonal) {
+                Task { await model.checkinAccount(live.id) }
+            }
+            MonoButton(text: "刷新凭证", icon: "arrow.clockwise", style: .tonal) {
+                Task { await model.refreshAccountToken(live.id) }
+            }
+            MonoButton(
+                text: live.enabled ? "停用" : "启用",
+                icon: live.enabled ? "pause.circle" : "play.circle",
+                style: live.enabled ? .danger : .tonal
+            ) {
+                Task {
+                    await model.setAccountEnabled(live, enabled: !live.enabled)
+                    dismiss()
                 }
             }
         }

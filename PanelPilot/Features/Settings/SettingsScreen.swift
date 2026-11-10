@@ -155,7 +155,12 @@ private struct SettingsDetailPane: View {
     var body: some View {
         Group {
             if let openedPage {
-                GenericSubPage(page: openedPage, onBack: { self.openedPage = nil })
+                if openedPage == .checkin {
+                    // 签到是重点模块，用专门的可视化页面，不再走通用区块渲染
+                    CheckinScreen(onBack: { self.openedPage = nil })
+                } else {
+                    GenericSubPage(page: openedPage, onBack: { self.openedPage = nil })
+                }
             } else {
                 ZStack {
                     AuroraBackdrop()

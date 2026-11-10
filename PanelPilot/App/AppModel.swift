@@ -47,12 +47,21 @@ struct ChatMessage: Identifiable, Equatable {
     var role: Role
     var text: String
     var at: Date
+    /// 这一次回答里执行的工具（「调用中… / 已完成 131 个模型」那种卡片）
+    var steps: [ChatToolStep]
 
-    init(id: UUID = UUID(), role: Role, text: String, at: Date = Date()) {
+    init(
+        id: UUID = UUID(),
+        role: Role,
+        text: String,
+        at: Date = Date(),
+        steps: [ChatToolStep] = []
+    ) {
         self.id = id
         self.role = role
         self.text = text
         self.at = at
+        self.steps = steps
     }
 }
 
@@ -159,6 +168,19 @@ final class AppModel: ObservableObject {
     @Published var assistantModels: [String] = []
     @Published var attachments: [ChatAttachment] = []
     @Published var assistantAccess: AssistantAccess = .full
+    // MARK: - 签到中心
+
+    /// `GET /api/checkin-center` 的解析结果
+    @Published var checkin: CheckinCenter?
+    @Published var checkinLoading = false
+    @Published var checkinError: String?
+    /// 正在执行的账号 id，或 "all"
+    @Published var checkinBusy: String?
+    @Published var checkinRecords: [CheckinRecord] = []
+    @Published var checkinRecordsTotal = 0
+    @Published var checkinRecordsLoading = false
+    @Published var checkinRecordsError: String?
+
     /// 网关 Key（助手聊天必须带一把可用的，否则面板会回「所选 API Key 已失效」）
     @Published var gatewayKeys: [GatewayKey] = []
     @Published var assistantKeyID: String = UserDefaults.standard.string(forKey: "panel.assistantKey") ?? "" {
@@ -212,10 +234,16 @@ final class AppModel: ObservableObject {
 
     // MARK: - 助手
 
-    @Published private(set) var chat: [ChatMessage] = []
-    @Published private(set) var isReplying = false
-    @Published private(set) var activeSessionID: String?
+    @Published var chat: [ChatMessage] = []
+    @Published var isReplying = false
+    @Published var activeSessionID: String?
     @Published var assistantModel: String = ""
+    /// 历史会话列表（`GET /api/assistant/sessions`）
+    @Published var assistantSessions: [AssistantSession] = []
+    @Published var sessionsLoading = false
+    @Published var sessionsError: String?
+    /// 当前打开的历史会话（用于高亮）
+    @Published var loadedSessionID: String?
 
     // MARK: - 全局
 
@@ -1494,7 +1522,7 @@ final class AppModel: ObservableObject {
         if display.isEmpty { display = "（已发送附件）" }
 
         // 4) 历史 + 本次消息
-        let history = chat.map { message -> [String: Any] in
+        let history = chat.filter { !$0.text.isEmpty || !$0.steps.isEmpty }.map { message -> [String: Any] in
             ["role": message.role.rawValue, "content": message.text]
         }
 
@@ -1514,49 +1542,208 @@ final class AppModel: ObservableObject {
         chat.append(ChatMessage(id: answerID, role: .assistant, text: ""))
         isReplying = true
         attachments = []
+        // 新对话第一次发送时分配一个会话 id，用于回写历史
+        if activeSessionID == nil { activeSessionID = UUID().uuidString }
 
         var messages = history
         messages.append(current)
-        var body: [String: Any] = ["messages": messages]
-        if !assistantModel.trimmingCharacters(in: .whitespaces).isEmpty {
-            body["model"] = assistantModel.trimmingCharacters(in: .whitespaces)
-        }
 
         chatTask?.cancel()
         chatTask = Task { [weak self] in
             guard let self else { return }
             _ = await self.loginIfNeeded()
+            await self.runAgent(answerID: answerID, messages: messages)
+        }
+    }
 
-            var attempt = 0
-            while attempt < 2 {
-                guard let api = self.makeAPI(
-                    timeout: 120,
-                    apiKeyOverride: self.assistantKeyValue
-                ) else {
-                    self.finishReply(answerID, error: PanelAPIError.notConfigured)
-                    return
-                }
-                do {
-                    try await api.streamChat("/api/assistant/chat", body: body) { piece in
-                        Task { @MainActor in
-                            self.appendAssistant(piece, to: answerID)
+    /// 工具循环：发一轮 → 模型要调工具就执行 → 把结果塞回去 → 再发。
+    /// 最多四轮，防止模型自己绕圈。
+    private func runAgent(answerID: UUID, messages start: [[String: Any]]) async {
+        var messages = start
+        var round = 0
+
+        while round < 4, !Task.isCancelled {
+            round += 1
+            var pending: [PanelToolCall] = []
+
+            guard let api = makeAPI(timeout: 180, apiKeyOverride: assistantKeyValue) else {
+                finishReply(answerID, error: PanelAPIError.notConfigured)
+                return
+            }
+            var body: [String: Any] = ["messages": messages]
+            if !assistantModel.trimmingCharacters(in: .whitespaces).isEmpty {
+                body["model"] = assistantModel.trimmingCharacters(in: .whitespaces)
+            }
+            body["tools"] = AssistantToolCatalog.payload
+            body["tool_choice"] = "auto"
+
+            do {
+                try await api.streamChat(
+                    "/api/assistant/chat",
+                    body: body,
+                    onText: { piece in
+                        Task { @MainActor [weak self] in
+                            self?.appendAssistant(piece, to: answerID)
                         }
+                    },
+                    onToolCalls: { calls in
+                        pending = calls.filter { !$0.name.isEmpty }
                     }
-                    self.finishReply(answerID, error: nil)
-                    return
-                } catch {
-                    let authFailure = (error as? PanelAPIError)?.isAuthFailure == true
-                    let hasContent = self.chat.first(where: { $0.id == answerID })?.text.isEmpty == false
-                    if authFailure, attempt == 0, !hasContent {
-                        attempt += 1
-                        _ = await self.loginIfNeeded(force: true)
-                        continue
-                    }
-                    self.finishReply(answerID, error: error)
-                    return
+                )
+            } catch {
+                let apiError = error as? PanelAPIError
+                if apiError?.isAuthFailure == true, round == 1 {
+                    _ = await loginIfNeeded(force: true)
+                    round -= 1
+                    continue
                 }
+                finishReply(answerID, error: error)
+                return
+            }
+
+            if Task.isCancelled { return }
+            guard !pending.isEmpty else { break }
+
+            // 把「我要调这些工具」写回对话历史，模型下一轮才知道结果属于谁
+            var assistantMessage: [String: Any] = ["role": "assistant", "content": ""]
+            assistantMessage["tool_calls"] = pending.map { call -> [String: Any] in
+                [
+                    "id": call.id,
+                    "type": "function",
+                    "function": ["name": call.name, "arguments": call.arguments]
+                ]
+            }
+            messages.append(assistantMessage)
+
+            for call in pending {
+                appendStep(
+                    answerID: answerID,
+                    step: ChatToolStep(
+                        id: call.id,
+                        name: call.name,
+                        label: AssistantToolCatalog.label(call.name),
+                        icon: AssistantToolCatalog.icon(call.name),
+                        status: .running,
+                        summary: "调用中…"
+                    )
+                )
+            }
+
+            for call in pending {
+                let result = await executeTool(call)
+                updateStep(
+                    answerID: answerID,
+                    stepID: call.id,
+                    status: result.ok ? .done : .failed,
+                    summary: result.summary,
+                    detail: result.text
+                )
+                messages.append([
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": String(result.text.prefix(8000))
+                ])
             }
         }
+
+        finishReply(answerID, error: nil)
+        await saveSession()
+    }
+
+    // MARK: 工具执行
+
+    /// 一个工具 → 一次面板接口调用。返回「给模型看的原文」和「给人看的一句话」。
+    private func executeTool(_ call: PanelToolCall) async -> (ok: Bool, summary: String, text: String) {
+        do {
+            switch call.name {
+            case "list_accounts":
+                let response = try await authenticatedRequest("GET", "/api/accounts", timeout: 30)
+                let rows = JSONRows.from(response.json)
+                let enabled = rows.filter { $0.bool("enabled") ?? true }.count
+                return (true, "\(rows.count) 个账号（\(enabled) 个启用）", response.json.rawText)
+
+            case "list_models":
+                let response = try await authenticatedRequest("GET", "/api/models/manage", timeout: 40)
+                let rows = JSONRows.from(response.json)
+                return (true, "\(rows.count) 个模型", response.json.rawText)
+
+            case "checkin_status":
+                let response = try await authenticatedRequest("GET", "/api/checkin-center", timeout: 40)
+                let center = CheckinParser.parse(response.json)
+                checkin = center
+                return (
+                    true,
+                    "今日已签 \(center.todayDone)/\(center.todayEligible)",
+                    response.json.rawText
+                )
+
+            case "checkin_all":
+                let response = try await authenticatedRequest(
+                    "POST", "/api/accounts/checkin", body: [String: Any](), timeout: 120
+                )
+                let summary = CheckinParser.summaryText(response.json)
+                await loadCheckin(force: true)
+                return (true, summary, response.json.rawText)
+
+            case "usage_stats":
+                let range = (call.json["range"] as? String) ?? "7"
+                let response = try await authenticatedRequest(
+                    "GET", "/api/stats/summary?range=\(range)", timeout: 40
+                )
+                let stats = PanelStatsSummary.parse(response.json, range: range)
+                return (
+                    true,
+                    "\(stats.requests) 次请求 · 成功率 \(PanelNumber.percent(stats.successRate))",
+                    response.json.rawText
+                )
+
+            case "routing_status":
+                let response = try await authenticatedRequest("GET", "/api/routing/workspace", timeout: 40)
+                return (true, "已读取路由配置", response.json.rawText)
+
+            case "refresh_models":
+                let response = try await authenticatedRequest("POST", "/api/models/refresh", body: [String: Any](), timeout: 90)
+                return (true, "已触发刷新", response.json.rawText)
+
+            case "clear_sticky":
+                let response = try await authenticatedRequest("POST", "/api/routing/sticky/clear", body: [String: Any](), timeout: 40)
+                return (true, "已清空粘滞", response.json.rawText)
+
+            default:
+                return (false, "不支持的工具", "未知工具：\(call.name)")
+            }
+        } catch {
+            let apiError = error as? PanelAPIError
+            let message = apiError?.errorDescription ?? error.localizedDescription
+            return (false, message, "调用失败：\(message)")
+        }
+    }
+
+    // MARK: 步骤卡片
+
+    private func appendStep(answerID: UUID, step: ChatToolStep) {
+        guard let index = chat.firstIndex(where: { $0.id == answerID }) else { return }
+        if let existing = chat[index].steps.firstIndex(where: { $0.id == step.id }) {
+            chat[index].steps[existing] = step
+        } else {
+            chat[index].steps.append(step)
+        }
+        localComputeCount &+= 1
+    }
+
+    private func updateStep(
+        answerID: UUID,
+        stepID: String,
+        status: ChatToolStep.Status,
+        summary: String,
+        detail: String
+    ) {
+        guard let index = chat.firstIndex(where: { $0.id == answerID }),
+              let stepIndex = chat[index].steps.firstIndex(where: { $0.id == stepID }) else { return }
+        chat[index].steps[stepIndex].status = status
+        chat[index].steps[stepIndex].summary = summary
+        chat[index].steps[stepIndex].detail = detail
+        localComputeCount &+= 1
     }
 
     private func finishReply(_ id: UUID, error: Error?) {

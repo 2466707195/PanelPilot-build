@@ -6,7 +6,7 @@ import SwiftUI
 //   · 底层 #F2F2F7 浅灰，上面全部是**实白 20pt 圆角**容器，不投影、不描边、不用毛玻璃
 //   · 只用两档圆角：外层 20 / 内层 14；胶囊 = 高度的一半
 //   · 彩色稀缺：#007AFF 只给链接与选中态，用户气泡 #FCE8F0，其余黑白灰
-//   · 底部是**离开屏幕底边 26pt 的白色浮岛**（见 `FloatingIsland`），不是贴底 TabBar
+//   · 底部是**系统原生 TabView 底栏**（iOS 26+ 自带 Liquid Glass 与选中放大动画），不自绘
 //
 // `Aurora*` 这层名字保留下来，是为了不把上百个调用点全改一遍；
 // 数值已经 1:1 对齐 `NativeUI`，两套 token 同源，页面里不要再写十六进制。
@@ -137,8 +137,8 @@ enum AuroraMetrics {
     static let cardPadding: CGFloat = 16
     /// 卡片组之间
     static let cardSpacing: CGFloat = 16
-    /// 内容底部留白：浮岛高度 + 24
-    static let listBottomInset: CGFloat = 128
+    /// 内容底部留白。底栏是系统原生的，安全区由它处理，这里只留一点呼吸。
+    static let listBottomInset: CGFloat = 24
     static let barBottomInset: CGFloat = 68
     static let primaryButtonHeight: CGFloat = 50
     static let controlButtonHeight: CGFloat = 36
@@ -151,8 +151,7 @@ enum AuroraMetrics {
     static let controlRadius: CGFloat = 14
     /// 外层卡片圆角
     static let cardRadius: CGFloat = 20
-    /// 浮岛离屏幕底边（不含安全区）。iOS 26 的玻璃底栏本来就贴得低，
-    /// 26 会显得「悬在半空」，压到 10 才像系统底栏。
+    /// 旧自绘浮岛用过；现在底栏是系统的，保留常量仅为兼容旧调用。
     static let islandBottom: CGFloat = 10
 }
 

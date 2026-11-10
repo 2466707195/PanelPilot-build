@@ -14,6 +14,7 @@ struct AgentScreen: View {
     enum Mode: String, CaseIterable { case assistant, config }
 
     @State private var mode: Mode = .assistant
+    @State private var showHistory = false
 
     var body: some View {
         ZStack {
@@ -62,6 +63,7 @@ struct AgentScreen: View {
                 await model.loadAgents()
                 await model.loadAssistantModels()
                 await model.loadGatewayKeys()
+                await model.loadSessions()
             }
         }
     }
@@ -78,11 +80,20 @@ struct AgentScreen: View {
                 }
             }
             Spacer(minLength: 0)
-            if mode == .assistant, !model.chat.isEmpty {
-                MonoButton(text: "新对话", icon: "plus", style: .outline) {
-                    model.newChat()
+            if mode == .assistant {
+                MonoButton(text: "历史", icon: "clock.arrow.circlepath", style: .tonal) {
+                    showHistory = true
+                    Task { await model.loadSessions(force: true) }
+                }
+                if !model.chat.isEmpty {
+                    MonoButton(text: "新对话", icon: "plus", style: .outline) {
+                        model.newChat()
+                    }
                 }
             }
+        }
+        .sheet(isPresented: $showHistory) {
+            ChatHistorySheet()
         }
     }
 }
@@ -141,7 +152,7 @@ private struct AssistantPane: View {
             .safeAreaInset(edge: .bottom) {
                 composer
                     .padding(.horizontal, AuroraMetrics.pagePadding)
-                    .padding(.bottom, 96)
+                    .padding(.bottom, 8)
                     .frame(maxWidth: 640)
                     .frame(maxWidth: .infinity)
             }
@@ -149,27 +160,28 @@ private struct AssistantPane: View {
     }
 
     private func bubble(_ message: ChatMessage) -> some View {
-        HStack {
-            if message.role == .user { Spacer(minLength: 30) }
+        VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 8) {
+            if !message.steps.isEmpty {
+                ForEach(message.steps) { step in
+                    ToolStepCard(step: step)
+                }
+            }
 
-            Text(message.text.isEmpty ? "…" : message.text)
-                .font(AuroraFont.bodyMedium)
-                .foregroundStyle(Aurora.ink)
-                .textSelection(.enabled)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
-                .background(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(message.role == .user ? Aurora.userBubble : Aurora.surface)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(Color.clear, lineWidth: 0)
-                )
-                .fixedSize(horizontal: false, vertical: true)
-
-            if message.role == .assistant { Spacer(minLength: 30) }
+            if !message.text.isEmpty || message.steps.isEmpty {
+                Text(message.text.isEmpty ? "…" : message.text)
+                    .font(AuroraFont.bodyMedium)
+                    .foregroundStyle(Aurora.ink)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .fill(message.role == .user ? Aurora.userBubble : Aurora.surface)
+                    )
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
+        .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
     }
 
     // MARK: 输入框

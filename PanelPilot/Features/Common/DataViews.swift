@@ -381,6 +381,7 @@ struct PanelPageShell<Content: View>: View {
             VStack(spacing: 0) {
                 AppTopBar(title: title) {
                     HStack(spacing: 6) {
+                        ServerChip()
                         StatusPill(text: model.state.title, color: model.state.tint)
                         GlassIconButton(
                             systemIcon: "arrow.clockwise",
