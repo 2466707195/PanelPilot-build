@@ -29,8 +29,10 @@ targets:
       path: PanelPilot/Resources/Info.plist
       properties:
         CFBundleDisplayName: 面板控制台
-        CFBundleShortVersionString: "2.6.1"
-        CFBundleVersion: "18"
+        # 引用 build settings，别再写死 —— 写死会出现「MARKETING_VERSION 改了、
+        # 包里的版本号没变」的鬼故事（2.6.2 第一次构建就踩了这个坑）。
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleDevelopmentRegion: zh-Hans
         UILaunchScreen:
           UIColorName: LaunchBackground
