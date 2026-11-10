@@ -2,19 +2,18 @@ import SwiftUI
 
 // === 悬浮岛（底栏）===
 //
-// iOS 26+ 直接用系统的 **Liquid Glass**：`.glassEffect(.regular, in: Capsule())`。
-// 玻璃是系统材质，会真的折射滚动到它下面的内容、跟随「降低透明度 / 提高对比度」
-// 等辅助功能、也会跟着系统大版本更新 —— 自己铺 `.ultraThinMaterial` 永远只是
-// 一层发灰的磨砂片，所以新系统上不要再自绘玻璃。
+// 容器：iOS 26+ 用系统 **Liquid Glass**（`.glassEffect(.regular, in: Capsule())`），
+// 低版本用 `ultraThinMaterial` 兜底。玻璃分支不叠 fill / 描边 / 阴影 —— 叠了就没有折射。
 //
-// 低版本（iOS 16.4–25）走 Material 兜底，视觉尽量接近。
+// 选中项：一枚**会拉伸的毛玻璃透镜**（不是纯色胶囊）。它的几何按「起点格 → 手指/目标格」
+// 算出来：
+//   · 静止时 = 一格宽；
+//   · 拖动时 = 从原格一路拉长到手指，松手再回弹成一格；
+//   · 点击时 = 先撑开一点再落位（`tapStretch`），有那种「液滴被拉过去」的感觉。
+// 透镜本身是 material + 半透白 + 极淡描边 + 轻投影，所以压在系统玻璃上还能分出层次。
 //
-// 交互：
-//   · 点某一格 → 切页（`IslandTabBar` 里的按钮）
-//   · **按住胶囊左右拖** → 选中项跟着手指连续移动，松手吸附到最近一格
-//     （`DragGesture(minimumDistance: 6)` + `simultaneousGesture`，不影响点击）
-//
-// 位置：`AuroraMetrics.islandBottom` 控制离屏幕底边（不含安全区）的距离。
+// 交互：点某一格切页；**按住透镜左右拖**可连续选（`DragGesture` + `simultaneousGesture`，
+// 不影响点击）。拖动只改高亮，松手才真正切页，避免连续拖时反复挂载页面。
 
 struct FloatingIsland<Content: View>: View {
 
@@ -43,7 +42,6 @@ private struct IslandSurface: ViewModifier {
 
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
-            // 原生 Liquid Glass。不要再叠 fill / 描边 / 阴影：那样会把折射盖掉。
             content
                 .glassEffect(.regular, in: shape)
                 .contentShape(shape)
@@ -69,8 +67,13 @@ struct IslandTabBar: View {
 
     private let tabs: [PanelTab] = [.overview, .routing, .agent, .accounts, .settings]
 
+    private let barHeight: CGFloat = 54
+    private let lensHeight: CGFloat = 46
+
     /// 拖动中的连续位置（0 … tabs.count-1）；松手后置 nil，回到按选中项计算
     @State private var dragPosition: CGFloat?
+    /// 点击切换时给透镜的额外宽度，落位后回 0（形成「撑开—收拢」）
+    @State private var tapStretch: CGFloat = 0
     @State private var barWidth: CGFloat = 0
 
     private var count: CGFloat { CGFloat(tabs.count) }
@@ -81,26 +84,35 @@ struct IslandTabBar: View {
         return CGFloat(index)
     }
 
-    /// 胶囊当前落点：拖动时跟手指，平时跟选中项
     private var position: CGFloat {
         min(max(dragPosition ?? activeIndex, 0), count - 1)
     }
 
-    /// 拖动中高亮的那一格。**只影响视觉**，真正的切页在松手时才发生 ——
-    /// 否则拖过一格就挂载一个新页面，连续拖动会明显卡。
+    /// 拖动中高亮的那一格。只影响视觉，真正切页在松手时。
     private var highlightedIndex: Int {
         let raw = dragPosition ?? activeIndex
         return min(max(Int(raw.rounded()), 0), tabs.count - 1)
     }
 
+    private var baseWidth: CGFloat { segment > 0 ? max(segment - 10, 24) : 0 }
+
+    /// 透镜的位置与宽度：静止 = 一格；拖动 = 从原格拉长到手指；点击 = 撑一下再回弹。
+    private var lens: (x: CGFloat, width: CGFloat) {
+        guard segment > 0 else { return (0, 0) }
+        let originCenter = activeIndex * segment + segment / 2
+        let fingerCenter = position * segment + segment / 2
+        let travel = abs(fingerCenter - originCenter)
+        let width = min(baseWidth + travel * 0.9 + tapStretch, segment * 2.2)
+        let center = dragPosition == nil ? fingerCenter : (originCenter + fingerCenter) / 2
+        return (center - width / 2, width)
+    }
+
     var body: some View {
-        ZStack(alignment: .leading) {
-            // 选中胶囊：比玻璃再深一点，才看得出「选中了哪一格」
+        ZStack(alignment: .topLeading) {
             if segment > 0 {
-                Capsule(style: .continuous)
-                    .fill(Aurora.ink.opacity(0.08))
-                    .frame(width: max(segment - 6, 8), height: 54)
-                    .offset(x: position * segment + 3)
+                lensView
+                    .frame(width: lens.width, height: lensHeight)
+                    .offset(x: lens.x, y: (barHeight - lensHeight) / 2)
                     .allowsHitTesting(false)
             }
 
@@ -108,23 +120,20 @@ struct IslandTabBar: View {
                 ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
                     let active = index == highlightedIndex
                     Button {
-                        withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
-                            selection = tab
-                            dragPosition = nil
-                        }
+                        select(tab)
                     } label: {
                         VStack(spacing: 5) {
                             Image(systemName: tab.icon)
                                 .font(.system(size: 21, weight: active ? .medium : .light))
                                 .frame(height: 23)
                             Text(tab.title)
-                                .font(.system(size: 10.5, weight: active ? .semibold : .medium))
+                                .font(.system(size: active ? 10.5 : 10, weight: active ? .semibold : .medium))
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.8)
                         }
                         .foregroundStyle(active ? Aurora.ink : Aurora.muted)
                         .frame(maxWidth: .infinity)
-                        .frame(height: 54)
+                        .frame(height: barHeight)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(IslandTabStyle())
@@ -132,7 +141,9 @@ struct IslandTabBar: View {
                     .accessibilityAddTraits(active ? [.isSelected] : [])
                 }
             }
+            .frame(height: barHeight)
         }
+        .frame(height: barHeight)
         .background(
             GeometryReader { geo in
                 Color.clear
@@ -141,9 +152,37 @@ struct IslandTabBar: View {
             }
         )
         .contentShape(Rectangle())
-        // 用 simultaneous：点击仍然交给上面的按钮，拖动才走这里
         .simultaneousGesture(dragGesture)
-        .animation(.spring(response: 0.34, dampingFraction: 0.82), value: selection)
+        .animation(.spring(response: 0.36, dampingFraction: 0.80), value: selection)
+    }
+
+    // MARK: 透镜
+
+    private var lensView: some View {
+        Capsule(style: .continuous)
+            .fill(.ultraThinMaterial)
+            .overlay(
+                Capsule(style: .continuous)
+                    .fill(Color.white.opacity(0.46))
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.60), lineWidth: 0.8)
+            )
+            .shadow(color: Color.black.opacity(0.10), radius: 7, x: 0, y: 3)
+    }
+
+    // MARK: 切换
+
+    private func select(_ tab: PanelTab) {
+        guard tab != selection else { return }
+        // 先撑开，再和位移一起回弹
+        tapStretch = 28
+        withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) {
+            selection = tab
+            dragPosition = nil
+            tapStretch = 0
+        }
     }
 
     // MARK: 拖动
@@ -153,15 +192,13 @@ struct IslandTabBar: View {
             .onChanged { value in
                 guard segment > 0 else { return }
                 let raw = (value.location.x - segment / 2) / segment
-                let clamped = min(max(raw, 0), count - 1)
-                // 只移动胶囊与高亮，不切页（切页放在松手时）
-                dragPosition = clamped
+                dragPosition = min(max(raw, 0), count - 1)
             }
             .onEnded { _ in
                 guard segment > 0 else { return }
                 let target = Int((dragPosition ?? activeIndex).rounded())
                 let clamped = min(max(target, 0), tabs.count - 1)
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
+                withAnimation(.spring(response: 0.36, dampingFraction: 0.80)) {
                     selection = tabs[clamped]
                     dragPosition = nil
                 }
