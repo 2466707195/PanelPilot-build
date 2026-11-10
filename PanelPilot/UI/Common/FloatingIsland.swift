@@ -86,6 +86,13 @@ struct IslandTabBar: View {
         min(max(dragPosition ?? activeIndex, 0), count - 1)
     }
 
+    /// 拖动中高亮的那一格。**只影响视觉**，真正的切页在松手时才发生 ——
+    /// 否则拖过一格就挂载一个新页面，连续拖动会明显卡。
+    private var highlightedIndex: Int {
+        let raw = dragPosition ?? activeIndex
+        return min(max(Int(raw.rounded()), 0), tabs.count - 1)
+    }
+
     var body: some View {
         ZStack(alignment: .leading) {
             // 选中胶囊：比玻璃再深一点，才看得出「选中了哪一格」
@@ -98,8 +105,8 @@ struct IslandTabBar: View {
             }
 
             HStack(spacing: 0) {
-                ForEach(tabs) { tab in
-                    let active = selection == tab
+                ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
+                    let active = index == highlightedIndex
                     Button {
                         withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
                             selection = tab
@@ -147,12 +154,8 @@ struct IslandTabBar: View {
                 guard segment > 0 else { return }
                 let raw = (value.location.x - segment / 2) / segment
                 let clamped = min(max(raw, 0), count - 1)
+                // 只移动胶囊与高亮，不切页（切页放在松手时）
                 dragPosition = clamped
-                // 边走边点亮图标，但不动画（胶囊已经在跟手了，再动画会打架）
-                let index = Int(clamped.rounded())
-                if tabs.indices.contains(index), tabs[index] != selection {
-                    selection = tabs[index]
-                }
             }
             .onEnded { _ in
                 guard segment > 0 else { return }
