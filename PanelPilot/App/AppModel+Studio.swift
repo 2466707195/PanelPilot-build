@@ -319,7 +319,15 @@ extension AppModel {
 
 // MARK: - 接入配置生成（Agent 配置页）
 
-/// 一种客户端的接入配置模板。生成的是**本地 JSON 文件**，导出后自己放到对应目录。
+/// 一种客户端的接入配置模板。
+///
+/// 每个模板都按**那个客户端真正吃的格式**生成，而不是把三件套随便包成 JSON：
+///   · Claude Code 读 `~/.claude/settings.json` 的 `env`，它的 SDK 会自己拼上
+///     `/v1/messages` —— base 写 `.../v1` 就变成 `/v1/v1/messages`，直接 404；
+///   · Codex CLI 只认 `~/.codex/config.toml`（TOML），JSON 那份它根本读不了；
+///   · OpenCode 读 `opencode.json`，要 `npm` + `options` + `models` 的固定形状；
+///   · 剩下两个是通用件：`.env`（openai SDK / Chatbox / Cherry Studio 直接能用）
+///     和一段 curl 自测脚本（地址、密钥、模型到底哪一步不对，跑一下就知道）。
 struct AgentPreset: Identifiable, Equatable {
 
     var id: String
@@ -328,58 +336,144 @@ struct AgentPreset: Identifiable, Equatable {
     var target: String
     var note: String
 
-    func object(baseURL: String, apiKey: String, model: String, models: [String] = []) -> [String: Any] {
+    // MARK: 地址归一
+
+    /// 面板根地址：去掉末尾斜杠，以及可能被用户粘进来的 `/v1`。
+    static func rootURL(_ base: String) -> String {
+        var value = base.trimmingCharacters(in: .whitespacesAndNewlines)
+        while value.hasSuffix("/") { value.removeLast() }
+        if value.hasSuffix("/v1") { value = String(value.dropLast(3)) }
+        while value.hasSuffix("/") { value.removeLast() }
+        return value
+    }
+
+    /// OpenAI 兼容基址：不管用户填没填 `/v1`，这里都以 `/v1` 结尾。
+    static func openAIBase(_ base: String) -> String {
+        let root = rootURL(base)
+        return root.isEmpty ? "" : root + "/v1"
+    }
+
+    // MARK: 生成
+
+    func text(baseURL: String, apiKey: String, model: String, models: [String] = []) -> String {
+        let root = Self.rootURL(baseURL)
+        let openai = Self.openAIBase(baseURL)
+        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let mainModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let list = models.isEmpty ? (mainModel.isEmpty ? [] : [mainModel]) : models
+
         switch id {
         case "claude":
             var env: [String: Any] = [
-                "ANTHROPIC_BASE_URL": baseURL,
-                "ANTHROPIC_AUTH_TOKEN": apiKey
+                // 注意：这里**不能**带 /v1。Claude Code 自己会拼 /v1/messages。
+                "ANTHROPIC_BASE_URL": root,
+                "ANTHROPIC_AUTH_TOKEN": key
             ]
-            if !model.isEmpty { env["ANTHROPIC_MODEL"] = model }
-            var root: [String: Any] = ["env": env]
-            if !models.isEmpty { root["models"] = models }
-            return root
+            if !mainModel.isEmpty {
+                env["ANTHROPIC_MODEL"] = mainModel
+                // 后台小任务也会发请求；指到同一个模型最稳（指到面板没有的 haiku 会直接报错）
+                env["ANTHROPIC_SMALL_FAST_MODEL"] = mainModel
+            }
+            return Self.json(["env": env] as [String: Any])
+
         case "codex":
-            var provider: [String: Any] = [
-                "name": "Agent2API",
-                "base_url": baseURL.hasSuffix("/v1") ? baseURL : baseURL + "/v1",
-                "env_key": "AGENT2API_API_KEY"
+            var lines = [
+                "# ~/.codex/config.toml —— Codex CLI 只认 TOML，JSON 它读不了",
+                "# 用之前先让终端里有这个环境变量（也可以写进 ~/.zshrc）：",
+                "#   export AGENT2API_API_KEY=\"\(key)\"",
+                ""
             ]
-            provider["wire_api"] = "responses"
-            var root: [String: Any] = [
-                "model_provider": "agent2api",
-                "model_providers": ["agent2api": provider]
-            ]
-            if !model.isEmpty { root["model"] = model }
-            if !models.isEmpty { root["models"] = models }
-            return root
+            if !mainModel.isEmpty { lines.append("model = \"\(mainModel)\"") }
+            lines.append("model_provider = \"agent2api\"")
+            lines.append("")
+            lines.append("[model_providers.agent2api]")
+            lines.append("name = \"Agent2API\"")
+            lines.append("base_url = \"\(openai)\"")
+            lines.append("env_key = \"AGENT2API_API_KEY\"")
+            lines.append("# 网关两种协议都支持：chat 兼容性最好，responses 功能更全")
+            lines.append("wire_api = \"chat\"")
+            if !list.isEmpty {
+                lines.append("")
+                lines.append("# 可用模型（/model 里能选到的 id）")
+                for item in list.prefix(40) { lines.append("# - \(item)") }
+            }
+            return lines.joined(separator: "\n") + "\n"
+
         case "opencode":
-            return [
+            var modelDict: [String: Any] = [:]
+            for item in (list.isEmpty ? ["auto"] : list) {
+                modelDict[item] = ["name": item]
+            }
+            var options: [String: Any] = ["baseURL": openai]
+            if !key.isEmpty { options["apiKey"] = key }
+            var object: [String: Any] = [
+                "$schema": "https://opencode.ai/config.json",
                 "provider": [
                     "agent2api": [
                         "npm": "@ai-sdk/openai-compatible",
-                        "options": [
-                            "baseURL": baseURL.hasSuffix("/v1") ? baseURL : baseURL + "/v1",
-                            "apiKey": apiKey
-                        ],
-                        "models": Dictionary(uniqueKeysWithValues: (models.isEmpty ? (model.isEmpty ? [] : [model]) : models).map { ($0, ["name": $0]) })
+                        "name": "Agent2API",
+                        "options": options,
+                        "models": modelDict
                     ]
                 ]
             ]
+            if !mainModel.isEmpty { object["model"] = "agent2api/\(mainModel)" }
+            return Self.json(object)
+
+        case "curl":
+            let script = """
+            #!/usr/bin/env bash
+            # 面板连通性自测：哪一步不对，跑一下就知道是哪一步
+            set -uo pipefail
+
+            BASE="\(openai)"
+            KEY="\(key)"
+            MODEL="\(mainModel.isEmpty ? "auto" : mainModel)"
+
+            echo "① 模型列表（不需要 key；能返回 JSON 就说明地址和证书都对）"
+            curl -sS --max-time 20 "$BASE/models" | head -c 300; echo
+
+            echo "② 聊天补全（这一步才真正校验 key 和模型）"
+            BODY=$(cat <<JSON
+            {"model":"$MODEL","messages":[{"role":"user","content":"ping"}],"max_tokens":16}
+            JSON
+            )
+            curl -sS --max-time 60 "$BASE/chat/completions" -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" -d "$BODY"
+            echo
+            """
+            return script + "\n"
+
         default:
-            var root: [String: Any] = [
-                "base_url": baseURL,
-                "api_key": apiKey
+            var lines = [
+                "# 通用 OpenAI 兼容三件套：openai SDK / Chatbox / Cherry Studio / NextChat / LobeChat",
+                "# 这些软件里就填这三个值；Base URL 别再自己加 /v1",
+                "OPENAI_BASE_URL=\(openai)",
+                "OPENAI_API_KEY=\(key)",
+                "OPENAI_MODEL=\(mainModel.isEmpty ? "auto" : mainModel)",
+                "",
+                "# Claude Code 用另一组，注意 base 不带 /v1：",
+                "# ANTHROPIC_BASE_URL=\(root)",
+                "# ANTHROPIC_AUTH_TOKEN=\(key)"
             ]
-            if !model.isEmpty { root["model"] = model }
-            let list = models.isEmpty ? (model.isEmpty ? [] : [model]) : models
             if !list.isEmpty {
-                root["models"] = list
-                root["default_model"] = model.isEmpty ? (list.first ?? "") : model
+                lines.append("")
+                lines.append("# 可用模型：")
+                for item in list.prefix(40) { lines.append("# - \(item)") }
             }
-            root["provider"] = "openai-compatible"
-            return root
+            return lines.joined(separator: "\n") + "\n"
         }
+    }
+
+    static func json(_ object: [String: Any]) -> String {
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(
+                withJSONObject: object,
+                options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+              ),
+              let text = String(data: data, encoding: .utf8) else {
+            return "{}"
+        }
+        return text
     }
 }
 
@@ -389,12 +483,12 @@ enum AgentPresetCatalog {
         AgentPreset(
             id: "claude", name: "Claude Code", fileName: "claude-settings.json",
             target: "~/.claude/settings.json",
-            note: "把 env 里的三项合并进现有 settings.json"
+            note: "合并进现有 settings.json 的 env；base 不能带 /v1"
         ),
         AgentPreset(
-            id: "codex", name: "Codex CLI", fileName: "codex-config.json",
-            target: "~/.codex/config.json",
-            note: "Codex 用 model_providers；TOML 版本可照着字段填"
+            id: "codex", name: "Codex CLI", fileName: "config.toml",
+            target: "~/.codex/config.toml",
+            note: "TOML 格式；密钥放环境变量 AGENT2API_API_KEY"
         ),
         AgentPreset(
             id: "opencode", name: "OpenCode", fileName: "opencode.json",
@@ -402,9 +496,14 @@ enum AgentPresetCatalog {
             note: "openai-compatible 提供商，写入 options"
         ),
         AgentPreset(
-            id: "generic", name: "通用（OpenAI 兼容）", fileName: "agent2api.json",
-            target: "任意支持自定义 baseURL 的客户端",
-            note: "base_url + api_key + model 三件套"
+            id: "env", name: "通用（.env）", fileName: ".env",
+            target: "任意 OpenAI 兼容软件 / SDK",
+            note: "Base URL + API Key + 模型三件套"
+        ),
+        AgentPreset(
+            id: "curl", name: "连通性自测", fileName: "check-agent2api.sh",
+            target: "在电脑上 bash 跑一下",
+            note: "两条命令区分：地址不对，还是 key / 模型不对"
         )
     ]
 }
@@ -456,6 +555,7 @@ extension AppModel {
     }
 
     /// 生成配置文本（纯本地，不发请求）。
+    /// 生成配置文本（纯本地，不发请求）。格式由模板自己决定：JSON / TOML / .env / shell。
     func agentConfigText(
         preset: AgentPreset,
         baseURL: String,
@@ -463,21 +563,84 @@ extension AppModel {
         model: String,
         models: [String] = []
     ) -> String {
-        let object = preset.object(
-            baseURL: baseURL.trimmingCharacters(in: .whitespacesAndNewlines),
-            apiKey: apiKey.trimmingCharacters(in: .whitespacesAndNewlines),
-            model: model.trimmingCharacters(in: .whitespacesAndNewlines),
-            models: models
-        )
-        guard JSONSerialization.isValidJSONObject(object),
-              let data = try? JSONSerialization.data(
-                withJSONObject: object,
-                options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-              ),
-              let text = String(data: data, encoding: .utf8) else {
-            return "{}"
+        preset.text(baseURL: baseURL, apiKey: apiKey, model: model, models: models)
+    }
+
+    /// 真的拿这份配置去打一次 `/chat/completions`，把网关的原话翻译成人话。
+    /// 「导出的配置别的软件用不了」这种事，点一下就能知道卡在地址、密钥还是模型。
+    func probeAgentEndpoint(
+        baseURL: String,
+        apiKey: String,
+        model: String
+    ) async -> (ok: Bool, text: String) {
+        let base = AgentPreset.openAIBase(baseURL)
+        guard let url = URL(string: base + "/chat/completions") else {
+            return (false, "地址不合法：\(baseURL)")
         }
-        return text
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 60
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !key.isEmpty {
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+            request.setValue(key, forHTTPHeaderField: "x-api-key")
+        }
+        let payload: [String: Any] = [
+            "model": model.isEmpty ? "auto" : model,
+            "messages": [["role": "user", "content": "ping"]],
+            "max_tokens": 16,
+            "stream": false
+        ]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let raw = String(data: data, encoding: .utf8) ?? ""
+            if (200..<300).contains(code) {
+                let reply = Self.replyText(from: data)
+                let short = reply.count > 40 ? String(reply.prefix(40)) + "…" : reply
+                return (true, "连通 · HTTP \(code) · 模型回：\(short)")
+            }
+            return (false, "HTTP \(code) · \(Self.explainAgentCode(code, raw: raw))")
+        } catch {
+            return (false, "连不上：\(error.localizedDescription)")
+        }
+    }
+
+    /// 从 `/chat/completions` 的返回里抠出第一段正文（流式的 delta 也认）。
+    private static func replyText(from data: Data) -> String {
+        guard let root = (try? JSONValue.decode(data))?.objectValue,
+              let choices = root["choices"]?.arrayValue,
+              let first = choices.first?.objectValue else {
+            return "（空回复）"
+        }
+        if let content = first["message"]?.objectValue?["content"]?.stringValue, !content.isEmpty {
+            return content
+        }
+        if let text = first["text"]?.stringValue, !text.isEmpty { return text }
+        if let delta = first["delta"]?.objectValue?["content"]?.stringValue, !delta.isEmpty { return delta }
+        return "（空回复）"
+    }
+
+    /// 把网关/客户端的报错翻成「下一步该改哪」。
+    private static func explainAgentCode(_ code: Int, raw: String) -> String {
+        let body = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let brief = body.count > 160 ? String(body.prefix(160)) + "…" : body
+        switch code {
+        case 401, 403:
+            return "密钥没带对或这把 Key 被停用了。去「设置 → 网关 Key」确认它已启用，再点「用本机密钥」。"
+        case 404:
+            return "地址层级不对。Base URL 应该是 https://域名/v1（Claude Code 用 https://域名，不带 /v1）。响应：\(brief)"
+        case 429:
+            return "被限流了，等一会儿再试；也可能是这把 Key 的额度用完了。"
+        case 500...599:
+            return "网关或上游账号出错：\(brief)"
+        default:
+            return brief.isEmpty ? "没有返回内容" : brief
+        }
     }
 
     /// 写到临时目录，供分享 / 导出。

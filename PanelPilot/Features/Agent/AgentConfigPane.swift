@@ -26,6 +26,10 @@ struct AgentConfigPane: View {
     @State private var copied = false
     /// 取密钥失败时给一句人话，不然按钮点下去毫无反馈
     @State private var keyHint: String?
+    /// 「测一下」的结果：真的拿这份配置去打一次 /chat/completions
+    @State private var probing = false
+    @State private var probeOK = true
+    @State private var probeText: String?
 
     private var preset: AgentPreset {
         AgentPresetCatalog.all.first { $0.id == presetID } ?? AgentPresetCatalog.all[0]
@@ -278,7 +282,7 @@ struct AgentConfigPane: View {
                     model.toast = Toast(
                         text: apiKey.isEmpty
                             ? "已填入地址与模型；密钥还没拿到，点右侧「用本机密钥」重试"
-                            : "已填入 baseURL / 密钥 / 主模型（还会写入 \(providerModels.count) 个模型）",
+                            : "已填入 baseURL / 密钥 / 主模型",
                         kind: apiKey.isEmpty ? .warning : .success
                     )
                 }
@@ -286,9 +290,50 @@ struct AgentConfigPane: View {
                     baseURL = ""
                     apiKey = ""
                     modelName = ""
+                    probeText = nil
                 }
             }
             .padding(.top, 12)
+
+            // 配置导出去别的软件之前，先在这里打一发真实请求：
+            // 地址错（404）、密钥错（401）、模型不存在（400）当场就能看出来。
+            HStack(spacing: 8) {
+                MonoButton(
+                    text: probing ? "测试中…" : "测一下这条配置",
+                    icon: "bolt.horizontal",
+                    style: .tonal,
+                    enabled: !probing
+                ) {
+                    guard !probing else { return }
+                    Task {
+                        probing = true
+                        probeText = nil
+                        let result = await model.probeAgentEndpoint(
+                            baseURL: baseURL,
+                            apiKey: apiKey,
+                            model: modelName
+                        )
+                        probeOK = result.ok
+                        probeText = result.text
+                        probing = false
+                        model.haptic(result.ok ? .light : .medium)
+                        model.toast = Toast(
+                            text: result.ok ? "这条配置能跑通" : "配置有问题，看下面的提示",
+                            kind: result.ok ? .success : .error
+                        )
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.top, 10)
+
+            if let probeText {
+                Text(probeText)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(probeOK ? Aurora.success : Aurora.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 6)
+            }
         }
     }
 
@@ -379,8 +424,9 @@ struct AgentConfigPane: View {
             VStack(alignment: .leading, spacing: 8) {
                 tip("1", "文件放哪：\(preset.target)")
                 tip("2", "密钥只保留在本机与生成的文件里，不上传面板。")
-                tip("3", "面板侧若改过端口或路径，Base URL 记得同步改。")
-                tip("4", "想用别的客户端，选「通用（OpenAI 兼容）」，字段就三件套。")
+                tip("3", "Base URL 规则不一样：OpenAI 兼容的客户端填 https://域名/v1；Claude Code 反过来，只能填 https://域名，它自己会拼 /v1/messages。")
+                tip("4", "Codex 只认 TOML，所以导出的是 config.toml；把 env_key 指的那个环境变量 export 出来再启动它。")
+                tip("5", "导出前先点「测一下这条配置」：地址、密钥、模型哪一步不对，当场能看到网关的原话。")
             }
             .padding(.top, 6)
         }
