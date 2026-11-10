@@ -101,12 +101,15 @@ struct SectionCard<Content: View>: View {
 
     @ViewBuilder var content: () -> Content
 
+    /// 卡片底色跟随「设置 → 显示 → 外观」的滑杆（透明 ↔ 色调）。
+    @ObservedObject private var look = AppearanceStore.shared
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) { content() }
             .padding(AuroraMetrics.cardPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                AuroraShape.card.fill(Aurora.surface)
+                AuroraShape.card.fill(Aurora.surface.opacity(look.cardAlpha))
             )
     }
 }

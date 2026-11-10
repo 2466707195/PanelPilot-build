@@ -13,6 +13,7 @@ import SwiftUI
 struct OverviewScreen: View {
 
     @EnvironmentObject private var model: AppModel
+    @ObservedObject private var look = AppearanceStore.shared
 
     // 图表与筛选的本地状态
     @State private var metric: TrendMetric = .tokens
@@ -179,7 +180,7 @@ struct OverviewScreen: View {
         .padding(16)
         .background(
             RoundedRectangle(cornerRadius: AuroraMetrics.cardRadius, style: .continuous)
-                .fill(Aurora.surface)
+                .fill(Aurora.surface.opacity(look.cardAlpha))
         )
     }
 

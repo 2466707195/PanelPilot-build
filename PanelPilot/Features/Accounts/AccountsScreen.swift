@@ -121,12 +121,31 @@ struct AccountsScreen: View {
                     providerFilter = ""
                 }
                 ForEach(model.providers) { provider in
-                    StudioChip(
-                        text: "\(provider.label) \(provider.accounts.count)",
-                        active: providerFilter == provider.id
-                    ) {
-                        providerFilter = providerFilter == provider.id ? "" : provider.id
+                    let active = providerFilter == provider.id
+                    Button {
+                        providerFilter = active ? "" : provider.id
+                        model.haptic()
+                    } label: {
+                        HStack(spacing: 6) {
+                            ProviderIcon(provider: provider.id, fallback: provider.label, size: 18)
+                            Text("\(provider.label) \(provider.accounts.count)")
+                                .font(.system(size: 13, weight: active ? .semibold : .medium))
+                                .foregroundStyle(active ? Aurora.ink : Aurora.inkSoft)
+                                .lineLimit(1)
+                        }
+                        .padding(.horizontal, 10)
+                        .frame(height: 32)
+                        .background(
+                            Capsule().fill(Aurora.surface.opacity(active ? 1 : 0.6))
+                        )
+                        .overlay(
+                            Capsule().strokeBorder(
+                                Aurora.ink.opacity(active ? 0.14 : 0.05),
+                                lineWidth: 0.5
+                            )
+                        )
                     }
+                    .buttonStyle(.plain)
                 }
             }
             .padding(.horizontal, 1)
@@ -176,15 +195,13 @@ struct AccountsScreen: View {
         Button {
             detail = account
         } label: {
-            HStack(spacing: 10) {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(account.healthy ? Aurora.brand.tint(0.14) : Aurora.surfaceVariant)
-                    .frame(width: 38, height: 38)
-                    .overlay(
-                        Text(initial(account))
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundStyle(account.healthy ? Aurora.brand : Aurora.muted)
-                    )
+            HStack(spacing: 11) {
+                ProviderIcon(
+                    provider: account.provider,
+                    fallback: initial(account),
+                    size: 38
+                )
+                .opacity(account.enabled ? 1 : 0.45)
 
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 5) {
@@ -212,7 +229,7 @@ struct AccountsScreen: View {
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(Aurora.muted)
             }
-            .padding(.vertical, 10)
+            .padding(.vertical, 12)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -247,15 +264,12 @@ struct AccountDetailSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    HStack(spacing: 10) {
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(live.healthy ? Aurora.brand.tint(0.14) : Aurora.surfaceVariant)
-                            .frame(width: 46, height: 46)
-                            .overlay(
-                                Image(systemName: "person.crop.circle")
-                                    .font(.system(size: 20, weight: .medium))
-                                    .foregroundStyle(live.healthy ? Aurora.brand : Aurora.muted)
-                            )
+                    HStack(spacing: 12) {
+                        ProviderIcon(
+                            provider: live.provider,
+                            fallback: live.name,
+                            size: 48
+                        )
 
                         VStack(alignment: .leading, spacing: 3) {
                             Text(live.name)

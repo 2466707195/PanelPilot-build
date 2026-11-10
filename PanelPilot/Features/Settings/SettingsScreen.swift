@@ -98,20 +98,20 @@ struct SettingsScreen: View {
                         model.haptic()
                         opened = pane
                     } label: {
-                        HStack(spacing: 11) {
+                        HStack(spacing: 12) {
                             Image(systemName: pane.icon)
-                                .font(.system(size: 13, weight: .semibold))
+                                .font(.system(size: 15, weight: .regular))
                                 .foregroundStyle(Aurora.inkSoft)
-                                .frame(width: 24)
+                                .frame(width: 26)
                             Text(pane.title)
                                 .font(AuroraFont.bodyMedium)
                                 .foregroundStyle(Aurora.ink)
                             Spacer(minLength: 4)
                             Image(systemName: "chevron.right")
-                                .font(.system(size: 10, weight: .bold))
+                                .font(.system(size: 12, weight: .semibold))
                                 .foregroundStyle(Aurora.muted)
                         }
-                        .padding(.vertical, 12)
+                        .padding(.vertical, 17)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -273,9 +273,85 @@ private struct DisplaySettings: View {
         SectionCard {
             SectionTitle(title: "外观")
 
-            KeyValueRow(label: "当前主题", value: "浅色（Aurora）")
-            KeyValueRow(label: "底栏", value: "系统原生 TabView")
-            KeyValueRow(label: "深色模式", value: "暂未提供")
+            AppearanceSlider()
+        }
+
+        SectionCard {
+            SectionTitle(title: "界面")
+
+            KeyValueRow(label: "主题", value: "浅色")
+            KeyValueRow(label: "底栏", value: "悬浮岛 · 胶囊")
+            KeyValueRow(label: "卡片圆角", value: "20 pt")
+        }
+    }
+}
+
+// MARK: - 外观滑杆（透明 ↔ 色调）
+
+/// 参照系统「外观 / 玻璃强度」那种一根滑杆的写法：
+/// 左端是叠放的描边方块（更通透），右端是实心方块（更有色调），
+/// 拖动时全站卡片、浮岛、输入框一起变。
+private struct AppearanceSlider: View {
+
+    @ObservedObject private var look = AppearanceStore.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                Image(systemName: "square.on.square")
+                    .font(.system(size: 17, weight: .regular))
+                    .foregroundStyle(Aurora.inkSoft)
+
+                Slider(value: $look.tint, in: 0...1)
+                    .tint(Aurora.brand)
+
+                Image(systemName: "square.fill.on.square.fill")
+                    .font(.system(size: 17, weight: .regular))
+                    .foregroundStyle(Aurora.ink)
+            }
+            .padding(.top, 6)
+
+            HStack(alignment: .top, spacing: 10) {
+                Text("「透明」更通透，「色调」可增加不透明度，提升内容和控制项的对比度。")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Aurora.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 4)
+                Text(look.levelText)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Aurora.inkSoft)
+                    .monospacedDigit()
+            }
+
+            // 即时预览：一张套在卡片里的假卡片，拖动滑杆时看这里最直观
+            HStack(spacing: 10) {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Aurora.brand.opacity(0.12))
+                    .frame(width: 34, height: 34)
+                    .overlay(
+                        Image(systemName: "rectangle.on.rectangle")
+                            .font(.system(size: 15, weight: .regular))
+                            .foregroundStyle(Aurora.brand)
+                    )
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("卡片预览")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(Aurora.ink)
+                    Text("拖动滑杆看这一块的底")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Aurora.muted)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: AuroraMetrics.controlRadius, style: .continuous)
+                    .fill(Aurora.surface.opacity(look.cardAlpha))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: AuroraMetrics.controlRadius, style: .continuous)
+                    .strokeBorder(Aurora.ink.opacity(0.05), lineWidth: 0.5)
+            )
         }
     }
 }

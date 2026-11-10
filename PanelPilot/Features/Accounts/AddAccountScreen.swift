@@ -165,40 +165,64 @@ struct AddAccountScreen: View {
     private var providerList: some View {
         let existing = model.providers.map(\.id)
         let items = ProviderCatalog.ordered(existing: existing)
-        return VStack(alignment: .leading, spacing: 8) {
-            ForEach(items) { spec in
-                providerRow(spec)
+        return VStack(alignment: .leading, spacing: 10) {
+            // 参照桌面端：两列网格，一格一个提供商，图标是各家官方图
+            LazyVGrid(
+                columns: [
+                    GridItem(.flexible(), spacing: 10),
+                    GridItem(.flexible(), spacing: 10)
+                ],
+                spacing: 10
+            ) {
+                ForEach(items) { spec in
+                    providerTile(spec)
+                }
             }
+
             Button {
                 mode = .custom
                 model.haptic()
             } label: {
                 HStack(spacing: 11) {
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .fill(Aurora.surfaceVariant)
-                        .frame(width: 40, height: 40)
-                        .overlay(
-                            Image(systemName: "plus")
-                                .font(.system(size: 15, weight: .bold))
-                                .foregroundStyle(Aurora.inkSoft)
-                        )
-                    Text("自定义提供商")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Aurora.ink)
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            .fill(Aurora.surfaceVariant)
+                        Image(systemName: "plus")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(Aurora.inkSoft)
+                    }
+                    .frame(width: 34, height: 34)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("自定义提供商")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Aurora.ink)
+                        Text("自己填 Base URL 与协议")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Aurora.muted)
+                    }
                     Spacer(minLength: 4)
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .bold))
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Aurora.muted)
                 }
                 .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .glassRow()
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: AuroraMetrics.controlRadius, style: .continuous)
+                        .fill(Aurora.surface.opacity(0.7))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: AuroraMetrics.controlRadius, style: .continuous)
+                        .strokeBorder(Aurora.ink.opacity(0.05), lineWidth: 0.5)
+                )
             }
             .buttonStyle(.plain)
+            .padding(.top, 2)
         }
     }
 
-    private func providerRow(_ spec: ProviderSpec) -> some View {
+    private func providerTile(_ spec: ProviderSpec) -> some View {
         let count = model.providers.first { $0.id == spec.id }?.accounts.count ?? 0
         return Button {
             selected = spec
@@ -207,43 +231,34 @@ struct AddAccountScreen: View {
             if mode == .web { Task { await model.loadLoginMethods(provider: spec.id) } }
             model.haptic()
         } label: {
-            HStack(spacing: 11) {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(spec.tint.opacity(0.14))
-                    .frame(width: 40, height: 40)
-                    .overlay(
-                        Group {
-                            if let symbol = spec.symbol {
-                                Image(systemName: symbol)
-                                    .font(.system(size: 17, weight: .semibold))
-                                    .foregroundStyle(spec.tint)
-                            } else {
-                                Text(spec.glyph)
-                                    .font(.system(size: 15, weight: .bold))
-                                    .foregroundStyle(spec.tint)
-                            }
-                        }
-                    )
+            HStack(spacing: 9) {
+                ProviderIcon(provider: spec.id, fallback: spec.glyph, size: 32)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(spec.name)
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: 12.5, weight: .semibold))
                         .foregroundStyle(Aurora.ink)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                     Text(count > 0 ? "\(count) 个账号" : "还没有账号")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(count > 0 ? Aurora.teal : Aurora.muted)
+                        .font(.system(size: 10))
+                        .foregroundStyle(count > 0 ? Aurora.brand : Aurora.muted)
+                        .lineLimit(1)
                 }
 
-                Spacer(minLength: 4)
-
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(Aurora.muted)
+                Spacer(minLength: 0)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .glassRow()
+            .padding(.horizontal, 9)
+            .frame(height: 58)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: AuroraMetrics.controlRadius, style: .continuous)
+                    .fill(Aurora.surface.opacity(0.7))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: AuroraMetrics.controlRadius, style: .continuous)
+                    .strokeBorder(Aurora.ink.opacity(0.05), lineWidth: 0.5)
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

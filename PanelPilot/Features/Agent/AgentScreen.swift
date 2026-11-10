@@ -10,6 +10,7 @@ import UIKit
 struct AgentScreen: View {
 
     @EnvironmentObject private var model: AppModel
+    @ObservedObject private var look = AppearanceStore.shared
 
     enum Mode: String, CaseIterable { case assistant, config }
 
@@ -351,9 +352,9 @@ private struct AssistantPane: View {
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: AuroraMetrics.cardRadius, style: .continuous)
-                .fill(Aurora.surface)
+                .fill(Aurora.surface.opacity(look.islandAlpha))
         )
-        .shadow(color: Color.black.opacity(0.06), radius: 18, x: 0, y: 8)
+        .shadow(color: Color.black.opacity(0.08), radius: 18, x: 0, y: 8)
         .photosPicker(isPresented: $showPhotoPicker, selection: $photoItem, matching: .images, photoLibrary: .shared())
         .onChange(of: photoItem) { item in
             guard let item else { return }
