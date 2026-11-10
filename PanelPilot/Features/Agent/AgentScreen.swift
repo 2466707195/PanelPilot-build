@@ -10,7 +10,6 @@ import UIKit
 struct AgentScreen: View {
 
     @EnvironmentObject private var model: AppModel
-    @ObservedObject private var look = AppearanceStore.shared
 
     enum Mode: String, CaseIterable { case assistant, config }
 
@@ -93,6 +92,8 @@ struct AgentScreen: View {
 private struct AssistantPane: View {
 
     @EnvironmentObject private var model: AppModel
+    /// 输入框的底跟随「设置 → 显示 → 外观」那根滑杆
+    @ObservedObject private var look = AppearanceStore.shared
 
     @State private var input: String = ""
     @State private var photoItem: PhotosPickerItem?
