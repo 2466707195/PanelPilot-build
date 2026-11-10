@@ -11,7 +11,7 @@ on:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
@@ -21,7 +21,7 @@ jobs:
       - name: Compile local engine checks
         run: |
           set -euo pipefail
-          swiftc -O \
+          xcrun swiftc -O \
             PanelPilot/Core/Model/JSONValue.swift \
             PanelPilot/Core/Net/JSONRows.swift \
             PanelPilot/Core/Model/PanelStats.swift \
