@@ -28,28 +28,24 @@ struct RootView: View {
     @State private var appliedStart = false
 
     var body: some View {
-        TabView(selection: $tab) {
-            OverviewScreen()
-                .tabItem { Label("概览", systemImage: "square.grid.2x2") }
-                .tag(PanelTab.overview)
+        ZStack(alignment: .bottom) {
+            Aurora.canvas.ignoresSafeArea()
 
-            RoutingScreen()
-                .tabItem { Label("路由", systemImage: "arrow.triangle.branch") }
-                .tag(PanelTab.routing)
+            Group {
+                switch tab {
+                case .overview: OverviewScreen()
+                case .routing: RoutingScreen()
+                case .agent: AgentScreen()
+                case .accounts: AccountsScreen()
+                case .settings: SettingsScreen()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            AgentScreen()
-                .tabItem { Label("Agent", systemImage: "sparkles") }
-                .tag(PanelTab.agent)
-
-            AccountsScreen()
-                .tabItem { Label("账号", systemImage: "person.2") }
-                .tag(PanelTab.accounts)
-
-            SettingsScreen()
-                .tabItem { Label("设置", systemImage: "slider.horizontal.3") }
-                .tag(PanelTab.settings)
+            FloatingIsland {
+                IslandTabBar(selection: $tab)
+            }
         }
-        .tint(Aurora.ink)
         .overlay(alignment: .top) {
             ToastOverlay()
         }
@@ -61,16 +57,15 @@ struct RootView: View {
             tab = .routing
         }
         .onChange(of: tab) { _ in model.haptic() }
-        .onAppear {
-            // 启动页只在冷启动时应用一次，别把用户之后的切换又拽回去
-            guard !appliedStart else { return }
-            appliedStart = true
-            if let start = PanelTab(rawValue: model.startTab) { tab = start }
-        }
         .onChange(of: scenePhase) { phase in
             if phase == .active {
                 model.handleBecameActive()
             }
+        }
+        .onAppear {
+            guard !appliedStart else { return }
+            appliedStart = true
+            if let start = PanelTab(rawValue: model.startTab) { tab = start }
         }
     }
 }

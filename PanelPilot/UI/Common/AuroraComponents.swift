@@ -11,56 +11,7 @@ import SwiftUI
 /// 卡片本身永远是不透明纯白，所以色晕不会污染内容可读性。
 struct AuroraBackdrop: View {
     var body: some View {
-        Canvas { context, size in
-            context.fill(
-                Path(CGRect(origin: .zero, size: size)),
-                with: .color(Aurora.canvas)
-            )
-            // 左上：靛蓝
-            drawGlow(
-                in: &context,
-                size: size,
-                color: Aurora.brand.opacity(0.11),
-                center: CGPoint(x: size.width * 0.16, y: size.height * 0.02),
-                radius: size.width * 0.85
-            )
-            // 右侧：青
-            drawGlow(
-                in: &context,
-                size: size,
-                color: Aurora.teal.opacity(0.08),
-                center: CGPoint(x: size.width * 1.04, y: size.height * 0.68),
-                radius: size.width * 0.80
-            )
-            // 左下：玫瑰
-            drawGlow(
-                in: &context,
-                size: size,
-                color: Aurora.rose.opacity(0.05),
-                center: CGPoint(x: size.width * 0.02, y: size.height * 0.98),
-                radius: size.width * 0.70
-            )
-        }
-        .ignoresSafeArea()
-    }
-
-    private func drawGlow(
-        in context: inout GraphicsContext,
-        size: CGSize,
-        color: Color,
-        center: CGPoint,
-        radius: CGFloat
-    ) {
-        let shading = GraphicsContext.Shading.radialGradient(
-            Gradient(colors: [color, .clear]),
-            center: center,
-            startRadius: 0,
-            endRadius: max(radius, 1)
-        )
-        context.fill(
-            Path(CGRect(origin: .zero, size: size)),
-            with: shading
-        )
+        Aurora.canvas.ignoresSafeArea()
     }
 }
 
@@ -79,38 +30,39 @@ struct AppTopBar<Actions: View>: View {
             if let onBack {
                 Button(action: onBack) {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(.system(size: 17, weight: .regular))
                         .foregroundStyle(Aurora.ink)
-                        .frame(width: AuroraMetrics.iconButtonSize, height: AuroraMetrics.iconButtonSize)
-                        .contentShape(Rectangle())
+                        .frame(width: 40, height: 40)
+                        .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .padding(.leading, 4)
-                Spacer().frame(width: 2)
-            }
+                .padding(.leading, 8)
 
-            VStack(alignment: .leading, spacing: 2) {
+                // 子页：17 semibold 居中
                 Text(title)
-                    .font(onBack == nil ? AuroraFont.headlineSmall : AuroraFont.titleLarge)
+                    .font(AuroraFont.titleMedium)
                     .foregroundStyle(Aurora.ink)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                if let subtitle {
-                    Text(subtitle)
-                        .font(AuroraFont.bodySmall)
-                        .foregroundStyle(Aurora.inkSoft)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.trailing, 40)
 
-            actions()
+                actions()
+            } else {
+                // 主页面：34 bold 左对齐
+                Text(title)
+                    .font(AuroraFont.headlineMedium)
+                    .foregroundStyle(Aurora.ink)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                actions()
+            }
         }
-        .padding(.leading, onBack == nil ? 20 : 4)
-        .padding(.trailing, 10)
-        .padding(.top, 8)
-        .padding(.bottom, 4)
+        .padding(.leading, onBack == nil ? AuroraMetrics.pagePadding : 0)
+        .padding(.trailing, AuroraMetrics.pagePadding - 6)
+        .padding(.top, onBack == nil ? 10 : 6)
+        .padding(.bottom, onBack == nil ? 6 : 4)
     }
 }
 
@@ -154,12 +106,7 @@ struct SectionCard<Content: View>: View {
             .padding(AuroraMetrics.cardPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                AuroraShape.card
-                    .fill(Color.white)
-                    .shadow(color: Aurora.cardShadow, radius: 4, x: 0, y: 1)
-            )
-            .overlay(
-                AuroraShape.card.stroke(Aurora.line.opacity(0.55), lineWidth: 1)
+                AuroraShape.card.fill(Aurora.surface)
             )
     }
 }
@@ -179,13 +126,13 @@ struct StatusPill: View {
                 .fill(color)
                 .frame(width: 6, height: 6)
             Text(text)
-                .font(AuroraFont.labelSmall)
-                .foregroundStyle(color)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Aurora.inkSoft)
                 .lineLimit(1)
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 4)
-        .background(Capsule().fill(color.tint(0.13)))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(Capsule().fill(Aurora.surfaceVariant))
         .contentShape(Capsule())
         .onTapGesture { onTap?() }
     }

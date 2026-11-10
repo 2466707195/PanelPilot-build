@@ -58,12 +58,8 @@ struct StudioSelect: View {
                 .padding(.horizontal, 11)
                 .frame(height: 38)
                 .background(
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .fill(Aurora.surfaceVariant.opacity(0.75))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .stroke(Aurora.line, lineWidth: 1)
+                    RoundedRectangle(cornerRadius: AuroraMetrics.controlRadius, style: .continuous)
+                        .fill(Aurora.surfaceVariant)
                 )
                 .contentShape(Rectangle())
             }
@@ -92,20 +88,11 @@ struct StudioChip: View {
                     .font(.system(size: 12.5, weight: active ? .semibold : .regular))
                     .lineLimit(1)
             }
-            .foregroundStyle(active ? Aurora.brand : Aurora.inkSoft)
-            .padding(.horizontal, 12)
+            .foregroundStyle(active ? Aurora.ink : Aurora.inkSoft)
+            .padding(.horizontal, 14)
             .frame(height: 32)
             .background(
-                GlassSurface(
-                    shape: Capsule(),
-                    shadowRadius: 4,
-                    highlight: active ? 0.22 : 0.16,
-                    tint: active ? Aurora.brand : nil,
-                    tintStrength: active ? 0.10 : 0
-                )
-            )
-            .overlay(
-                Capsule().stroke(active ? Aurora.brand.opacity(0.28) : Aurora.line, lineWidth: 1)
+                Capsule().fill(active ? Aurora.surface : Aurora.surfaceVariant)
             )
         }
         .buttonStyle(.plain)

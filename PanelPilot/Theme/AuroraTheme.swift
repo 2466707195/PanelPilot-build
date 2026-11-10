@@ -1,158 +1,176 @@
 import SwiftUI
 
-// === Aurora UI 设计 token（彩色版）===
+// === 设计 token：iOS Native Minimal ===
 //
-// 与 `aurora-ui` 技能的 Theme.kt / AuroraTheme.swift 一一对应，数值完全一致。
+// 这一版按 `ios-native-minimal` 技能重做视觉：
+//   · 底层 #F2F2F7 浅灰，上面全部是**实白 20pt 圆角**容器，不投影、不描边、不用毛玻璃
+//   · 只用两档圆角：外层 20 / 内层 14；胶囊 = 高度的一半
+//   · 彩色稀缺：#007AFF 只给链接与选中态，用户气泡 #FCE8F0，其余黑白灰
+//   · 底部是**离开屏幕底边 26pt 的白色浮岛**（见 `FloatingIsland`），不是贴底 TabBar
 //
-// 界面语言：
-//   · 背景近白微冷（#F8F7FC），上面浮三团极淡的极光色晕
-//   · 卡片是**不透明纯白**，靠描边与微阴影和背景分开（背景可以淡，内容必须实）
-//   · 三色语义：靛蓝 brand = 主操作/选中，青 teal = 正常/成功，玫瑰 rose = 提醒/危险
-//   · 按钮一律**透明玻璃**（见 `MonoButton`），颜色只出现在文字与图标上
-//
-// 不要再把这里改回单色：2.0.0 试过全站黑白，用户明确要求恢复彩色。
+// `Aurora*` 这层名字保留下来，是为了不把上百个调用点全改一遍；
+// 数值已经 1:1 对齐 `NativeUI`，两套 token 同源，页面里不要再写十六进制。
 
 enum Aurora {
 
-    // MARK: - 品牌三色
+    // MARK: - 唯一强调色
 
-    /// 主色：主操作、选中态、强调文字、进度条
-    static let brand = Color(hex: 0x4F46E5)
-    /// 主色深：渐变起点、按下态
-    static let brandDeep = Color(hex: 0x3730C0)
-    /// 青：正常/成功的辅助色、次强调
-    static let teal = Color(hex: 0x0F9D9D)
-    /// 玫瑰：提醒、警示、删除类操作
-    static let rose = Color(hex: 0xD6336C)
+    /// 链接、可点文字、选中态、主按钮
+    static let brand = Color(hex: 0x007AFF)
+    /// 按下态
+    static let brandDeep = Color(hex: 0x0062CC)
+    /// 成功圆点（只在状态点用）
+    static let teal = Color(hex: 0x34C759)
+    /// 删除类
+    static let rose = Color(hex: 0xFF3B30)
 
     // MARK: - 中性
 
-    static let canvas = Color(hex: 0xF8F7FC)
+    /// 全屏底色
+    static let canvas = Color(hex: 0xF2F2F7)
     static let surface = Color.white
-    static let ink = Color(hex: 0x17171F)
-    static let inkSoft = Color(hex: 0x5C5C70)
-    static let line = Color(hex: 0xE7E5F0)
-    static let surfaceVariant = Color(hex: 0xEFEDF7)
-    static let outline = Color(hex: 0xC6C3D6)
+    /// 主文字
+    static let ink = Color.black
+    /// 次要文字
+    static let inkSoft = Color(hex: 0x666666)
+    /// 细线
+    static let line = Color(hex: 0xE9E9EE)
+    /// 浅灰控件底（输入框、次按钮、胶囊槽）
+    static let surfaceVariant = Color(hex: 0xE9E9EE)
+    /// 更深一档的灰（按下态）
+    static let outline = Color(hex: 0xDFDFE5)
 
-    // MARK: - 容器（Material 3 container 语义）
+    // MARK: - 容器（保留旧名，值统一收敛到灰阶）
 
-    static let brandContainer = Color(hex: 0xE5E2FF)
-    static let onBrandContainer = Color(hex: 0x1B1464)
-    static let tealContainer = Color(hex: 0xCAF2F1)
-    static let onTealContainer = Color(hex: 0x003737)
-    static let roseContainer = Color(hex: 0xFFD9E3)
-    static let onRoseContainer = Color(hex: 0x3E0021)
+    static let brandContainer = Color(hex: 0xE9E9EE)
+    static let onBrandContainer = Color(hex: 0x007AFF)
+    static let tealContainer = Color(hex: 0xE9E9EE)
+    static let onTealContainer = Color(hex: 0x1C1C1E)
+    static let roseContainer = Color(hex: 0xFFE5E3)
+    static let onRoseContainer = Color(hex: 0xFF3B30)
 
     // MARK: - 语义
 
-    static let success = Color(hex: 0x11875A)
-    static let successContainer = Color(hex: 0xD8F5E8)
-    static let warning = Color(hex: 0xB26A00)
-    static let warningContainer = Color(hex: 0xFFEDCB)
-    static let info = Color(hex: 0x2563EB)
-    static let infoContainer = Color(hex: 0xDDE8FF)
-    static let muted = Color(hex: 0x8A8AA0)
-    static let hairline = Color(hex: 0xEFEDF6)
-    static let danger = Color(hex: 0xC62828)
+    static let success = Color(hex: 0x34C759)
+    static let successContainer = Color(hex: 0xE9E9EE)
+    static let warning = Color(hex: 0x666666)
+    static let warningContainer = Color(hex: 0xE9E9EE)
+    static let info = Color(hex: 0x007AFF)
+    static let infoContainer = Color(hex: 0xE9E9EE)
+    static let muted = Color(hex: 0x9A9AA0)
+    static let hairline = Color(hex: 0xE9E9EE)
+    static let danger = Color(hex: 0xFF3B30)
 
-    // MARK: - 渐变（主 CTA / 概览头图）
+    // MARK: - 用户气泡
+
+    static let userBubble = Color(hex: 0xFCE8F0)
+
+    // MARK: - 渐变（这套风格不用渐变，保留 API 只为兼容；返回纯白）
 
     static let brandGradient = LinearGradient(
-        colors: [Color(hex: 0x5B54F0), Color(hex: 0x8B5CF6)],
+        colors: [Color.white, Color.white],
         startPoint: .leading,
         endPoint: .trailing
     )
 
-    /// 概览头部：深一点、带方向的靛蓝渐变
     static let heroGradient = LinearGradient(
-        colors: [Color(hex: 0x5B54F0), Color(hex: 0x4338CA)],
+        colors: [Color.white, Color.white],
         startPoint: .topLeading,
         endPoint: .bottomTrailing
     )
 
-    // MARK: - 图表调色板
+    // MARK: - 图表：单色蓝的透明度阶梯
 
-    /// 环形图/柱状图按顺序取色：靛蓝 → 青 → 玫瑰 → 紫 → 琥珀 → 蓝
     static let chartPalette: [Color] = [
-        Color(hex: 0x4F46E5),
-        Color(hex: 0x0F9D9D),
-        Color(hex: 0xD6336C),
-        Color(hex: 0x8B5CF6),
-        Color(hex: 0xE8A33D),
-        Color(hex: 0x2563EB)
+        Color(hex: 0x007AFF),
+        Color(hex: 0x007AFF).opacity(0.72),
+        Color(hex: 0x007AFF).opacity(0.52),
+        Color(hex: 0x007AFF).opacity(0.36),
+        Color(hex: 0x007AFF).opacity(0.24),
+        Color(hex: 0x007AFF).opacity(0.14)
     ]
 
     static func chartColor(_ index: Int) -> Color {
         chartPalette[index % chartPalette.count]
     }
 
-    // MARK: - 阴影
+    // MARK: - 阴影（全屏只允许浮岛那一层）
 
-    static let cardShadow = Color.black.opacity(0.05)
-    static let barShadow = Color(red: 0.06, green: 0.06, blue: 0.16).opacity(0.10)
+    static let cardShadow = Color.clear
+    static let barShadow = Color.black.opacity(0.06)
 }
 
-// MARK: - 字阶
+// MARK: - 字阶（SF Pro，四档为主）
 
-/// 中文优先：层级靠字重拉开，不靠字号堆叠；中文标题带负字距，视觉更紧实。
 enum AuroraFont {
 
-    static let headlineMedium = Font.system(size: 28, weight: .bold)
-    static let headlineSmall = Font.system(size: 24, weight: .bold)
-    static let titleLarge = Font.system(size: 19, weight: .bold)
-    static let titleMedium = Font.system(size: 16, weight: .semibold)
-    static let titleSmall = Font.system(size: 14, weight: .semibold)
-    static let bodyLarge = Font.system(size: 15, weight: .regular)
-    static let bodyMedium = Font.system(size: 14, weight: .regular)
-    static let bodySmall = Font.system(size: 12.5, weight: .regular)
-    static let labelLarge = Font.system(size: 14, weight: .semibold)
-    static let labelMedium = Font.system(size: 12, weight: .semibold)
-    static let labelSmall = Font.system(size: 11, weight: .medium)
-    /// 控件内文案：13pt 半粗，与 38pt 高的玻璃按钮配平
-    static let controlLabel = Font.system(size: 13, weight: .semibold)
-    /// 数值（等宽，避免轮询刷新时数字左右抖动）
-    static let monoValue = Font.system(size: 22, weight: .bold, design: .monospaced)
-    static let monoSmall = Font.system(size: 12, weight: .regular, design: .monospaced)
+    /// 34 bold —— 主页面大标题
+    static let headlineMedium = Font.system(size: 34, weight: .bold)
+    static let headlineSmall = Font.system(size: 28, weight: .bold)
+    /// 22 bold —— 卡片里的主数值旁边那种大号标题
+    static let titleLarge = Font.system(size: 22, weight: .bold)
+    /// 17 semibold —— 子页标题 / 卡片主标题
+    static let titleMedium = Font.system(size: 17, weight: .semibold)
+    /// 16 semibold
+    static let titleSmall = Font.system(size: 16, weight: .semibold)
+    static let bodyLarge = Font.system(size: 17, weight: .regular)
+    /// 16 regular —— 正文
+    static let bodyMedium = Font.system(size: 16, weight: .regular)
+    /// 14 regular —— 次要
+    static let bodySmall = Font.system(size: 14, weight: .regular)
+    static let labelLarge = Font.system(size: 14, weight: .medium)
+    static let labelMedium = Font.system(size: 12, weight: .medium)
+    /// 13 semibold —— 分区小标题
+    static let labelSmall = Font.system(size: 13, weight: .semibold)
+    /// 16 medium —— 按钮
+    static let controlLabel = Font.system(size: 16, weight: .medium)
+    /// 数字（等宽）
+    static let monoValue = Font.system(size: 22, weight: .semibold, design: .monospaced)
+    static let monoSmall = Font.system(size: 13, weight: .regular, design: .monospaced)
 }
 
-// MARK: - 间距与尺寸（8pt 网格）
+// MARK: - 间距与尺寸
 
 enum AuroraMetrics {
-    static let pagePadding: CGFloat = 14
+    /// 页面左右边距（浮岛同值）
+    static let pagePadding: CGFloat = 16
     static let cardPadding: CGFloat = 16
-    static let cardSpacing: CGFloat = 10
-    static let listBottomInset: CGFloat = 40
+    /// 卡片组之间
+    static let cardSpacing: CGFloat = 16
+    /// 内容底部留白：浮岛高度 + 24
+    static let listBottomInset: CGFloat = 128
     static let barBottomInset: CGFloat = 68
     static let primaryButtonHeight: CGFloat = 50
-    /// 统一控件高度：文字自适应横向宽度，纵向统一到 38pt，视觉齐平
-    static let controlButtonHeight: CGFloat = 38
-    static let controlButtonHPadding: CGFloat = 16
+    static let controlButtonHeight: CGFloat = 36
+    static let controlButtonHPadding: CGFloat = 14
     static let controlButtonIconSize: CGFloat = 14
-    static let controlButtonIconSpacing: CGFloat = 7
+    static let controlButtonIconSpacing: CGFloat = 6
     static let smallButtonHeight: CGFloat = controlButtonHeight
     static let iconButtonSize: CGFloat = 40
-    /// 控件圆角：比卡片小一档，形成「大容器/小控件」的层次
+    /// 内层控件圆角
     static let controlRadius: CGFloat = 14
+    /// 外层卡片圆角
+    static let cardRadius: CGFloat = 20
+    /// 浮岛离屏幕底边（不含安全区）
+    static let islandBottom: CGFloat = 26
 }
 
 // MARK: - 形状
 
 enum AuroraShape {
     static let control = RoundedRectangle(cornerRadius: AuroraMetrics.controlRadius, style: .continuous)
-    static let button = RoundedRectangle(cornerRadius: 16, style: .continuous)
-    static let card = RoundedRectangle(cornerRadius: 20, style: .continuous)
-    static let sheet = RoundedRectangle(cornerRadius: 24, style: .continuous)
-    static let bar = RoundedRectangle(cornerRadius: 26, style: .continuous)
+    static let button = RoundedRectangle(cornerRadius: AuroraMetrics.controlRadius, style: .continuous)
+    static let card = RoundedRectangle(cornerRadius: AuroraMetrics.cardRadius, style: .continuous)
+    static let sheet = RoundedRectangle(cornerRadius: AuroraMetrics.cardRadius, style: .continuous)
+    static let bar = RoundedRectangle(cornerRadius: AuroraMetrics.cardRadius, style: .continuous)
     static let badge = RoundedRectangle(cornerRadius: 12, style: .continuous)
 }
 
-// MARK: - 状态等级 → 颜色
+// MARK: - 状态等级 → 颜色（只剩灰、蓝、红）
 
 func statusColor(_ level: Int) -> Color {
     switch level {
-    case 1: return Aurora.info
-    case 2: return Aurora.success
+    case 1, 2: return Aurora.success
     case 3: return Aurora.warning
     case 4: return Aurora.danger
     default: return Aurora.muted
@@ -162,11 +180,12 @@ func statusColor(_ level: Int) -> Color {
 // MARK: - 按压反馈
 
 struct PressScaleStyle: ButtonStyle {
-    var scale: CGFloat = 0.982
+    var scale: CGFloat = 0.97
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .scaleEffect(configuration.isPressed ? scale : 1)
-            .animation(.spring(response: 0.28, dampingFraction: 0.72), value: configuration.isPressed)
+            .opacity(configuration.isPressed ? 0.9 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }

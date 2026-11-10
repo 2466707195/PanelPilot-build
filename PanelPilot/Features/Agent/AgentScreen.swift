@@ -139,7 +139,7 @@ private struct AssistantPane: View {
             .safeAreaInset(edge: .bottom) {
                 composer
                     .padding(.horizontal, AuroraMetrics.pagePadding)
-                    .padding(.bottom, 6)
+                    .padding(.bottom, 96)
                     .frame(maxWidth: 640)
                     .frame(maxWidth: .infinity)
             }
@@ -152,20 +152,17 @@ private struct AssistantPane: View {
 
             Text(message.text.isEmpty ? "…" : message.text)
                 .font(AuroraFont.bodyMedium)
-                .foregroundStyle(message.role == .user ? Color.white : Aurora.ink)
+                .foregroundStyle(Aurora.ink)
                 .textSelection(.enabled)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 9)
                 .background(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(message.role == .user ? Aurora.ink : Color.white.opacity(0.72))
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(message.role == .user ? Aurora.userBubble : Aurora.surface)
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(
-                            message.role == .user ? Color.clear : Aurora.line,
-                            lineWidth: 1
-                        )
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(Color.clear, lineWidth: 0)
                 )
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -191,8 +188,12 @@ private struct AssistantPane: View {
                 .font(AuroraFont.bodyMedium)
                 .foregroundStyle(Aurora.ink)
                 .lineLimit(1...5)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: AuroraMetrics.controlRadius, style: .continuous)
+                        .fill(Aurora.surfaceVariant)
+                )
                 .onSubmit(send)
 
             HStack(spacing: 6) {
@@ -213,9 +214,8 @@ private struct AssistantPane: View {
                     Image(systemName: "plus")
                         .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(Aurora.ink)
-                        .frame(width: 30, height: 30)
-                        .background(Circle().fill(Color.white.opacity(0.72)))
-                        .overlay(Circle().stroke(Aurora.line, lineWidth: 1))
+                        .frame(width: 32, height: 32)
+                        .background(Circle().fill(Aurora.surfaceVariant))
                 }
 
                 Menu {
@@ -338,27 +338,22 @@ private struct AssistantPane: View {
                         .background(
                             Circle().fill(
                                 model.isReplying
-                                    ? Aurora.rose
-                                    : (canSend ? Aurora.brand : Color.white.opacity(0.6))
+                                    ? Aurora.danger
+                                    : (canSend ? Aurora.brand : Aurora.surfaceVariant)
                             )
                         )
-                        .overlay(
-                            Circle().stroke(canSend || model.isReplying ? Color.clear : Aurora.line, lineWidth: 1)
-                        )
+
                 }
                 .buttonStyle(.plain)
                 .disabled(!canSend && !model.isReplying)
             }
         }
-        .padding(9)
+        .padding(10)
         .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color.white.opacity(0.62))
+            RoundedRectangle(cornerRadius: AuroraMetrics.cardRadius, style: .continuous)
+                .fill(Aurora.surface)
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Aurora.line, lineWidth: 1)
-        )
+        .shadow(color: Color.black.opacity(0.06), radius: 18, x: 0, y: 8)
         .photosPicker(isPresented: $showPhotoPicker, selection: $photoItem, matching: .images, photoLibrary: .shared())
         .onChange(of: photoItem) { item in
             guard let item else { return }
@@ -402,12 +397,8 @@ private struct AssistantPane: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .background(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Color.white.opacity(0.72))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .stroke(Aurora.line, lineWidth: 1)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Aurora.surfaceVariant)
         )
     }
 
@@ -480,11 +471,6 @@ private struct AssistantPane: View {
 
 extension View {
     func glassPill() -> some View {
-        background(
-            Capsule().fill(Color.white.opacity(0.72))
-        )
-        .overlay(
-            Capsule().stroke(Aurora.line, lineWidth: 1)
-        )
+        background(Capsule().fill(Aurora.surfaceVariant))
     }
 }

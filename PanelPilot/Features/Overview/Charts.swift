@@ -120,13 +120,7 @@ struct AuroraBarChart: View {
 
                         RoundedRectangle(cornerRadius: 5, style: .continuous)
                             .fill(
-                                LinearGradient(
-                                    colors: isActive
-                                        ? [Aurora.brand, Color(hex: 0x8B5CF6)]
-                                        : [Aurora.brand.opacity(0.72), Color(hex: 0x8B5CF6).opacity(0.42)],
-                                    startPoint: .bottom,
-                                    endPoint: .top
-                                )
+                                isActive ? Aurora.brand : Aurora.brand.opacity(0.55)
                             )
                             .frame(height: max(3, ratio * (barAreaHeight - 16)))
                             .frame(maxWidth: .infinity)
@@ -312,14 +306,10 @@ struct KPITile: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 7) {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(tint.tint(0.14))
-                    .frame(width: 24, height: 24)
-                    .overlay(
-                        Image(systemName: icon)
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(tint)
-                    )
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: .light))
+                    .foregroundStyle(Aurora.muted)
+                    .frame(width: 18, height: 18)
 
                 Text(title)
                     .font(AuroraFont.labelSmall)
@@ -328,7 +318,7 @@ struct KPITile: View {
             }
 
             Text(value)
-                .font(.system(size: 21, weight: .bold, design: .rounded))
+                .font(.system(size: 21, weight: .semibold))
                 .foregroundStyle(Aurora.ink)
                 .lineLimit(1)
                 .minimumScaleFactor(0.55)

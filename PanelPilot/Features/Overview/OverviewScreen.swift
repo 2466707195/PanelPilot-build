@@ -85,7 +85,7 @@ struct OverviewScreen: View {
                     .padding(.horizontal, AuroraMetrics.pagePadding)
                     .padding(.top, 4)
                     // 底栏是系统 TabView，安全区之外再留一截，保证能真的滑到底
-                    .padding(.bottom, 96)
+                    .padding(.bottom, AuroraMetrics.listBottomInset)
                     .frame(maxWidth: 640)
                     .frame(maxWidth: .infinity)
                 }
@@ -125,13 +125,13 @@ struct OverviewScreen: View {
                         .fill(heroDotColor)
                         .frame(width: 6, height: 6)
                     Text(model.state.title)
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(Color.white)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Aurora.inkSoft)
                         .lineLimit(1)
                 }
-                .padding(.horizontal, 9)
+                .padding(.horizontal, 10)
                 .padding(.vertical, 5)
-                .background(Capsule().fill(Color.white.opacity(0.18)))
+                .background(Capsule().fill(Aurora.surfaceVariant))
 
                 Spacer(minLength: 4)
 
@@ -144,18 +144,10 @@ struct OverviewScreen: View {
                         Text(model.statsLoading ? "同步中" : "同步")
                             .font(.system(size: 12, weight: .semibold))
                     }
-                    .foregroundStyle(Color.white)
-                    .padding(.horizontal, 11)
+                    .foregroundStyle(Aurora.brand)
+                    .padding(.horizontal, 12)
                     .frame(height: 30)
-                    .background(
-                        GlassSurface(
-                            shape: Capsule(),
-                            shadowRadius: 6,
-                            highlight: 0.26,
-                            tint: .white,
-                            tintStrength: 0.20
-                        )
-                    )
+                    .background(Capsule().fill(Aurora.surfaceVariant))
                     .contentShape(Capsule())
                 }
                 .buttonStyle(PressScaleStyle(scale: 0.95))
@@ -163,12 +155,12 @@ struct OverviewScreen: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(model.activeProfile?.name ?? "未连接")
-                    .font(.system(size: 22, weight: .bold))
-                    .foregroundStyle(Color.white)
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(Aurora.ink)
                     .lineLimit(1)
                 Text(model.activeProfile?.displayAddress ?? "还没有配置面板地址")
-                    .font(.system(size: 11.5, weight: .regular, design: .monospaced))
-                    .foregroundStyle(Color.white.opacity(0.76))
+                    .font(.system(size: 13, design: .monospaced))
+                    .foregroundStyle(Aurora.inkSoft)
                     .lineLimit(1)
             }
 
@@ -186,14 +178,9 @@ struct OverviewScreen: View {
         }
         .padding(16)
         .background(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(Aurora.heroGradient)
+            RoundedRectangle(cornerRadius: AuroraMetrics.cardRadius, style: .continuous)
+                .fill(Aurora.surface)
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(Color.white.opacity(0.16), lineWidth: 1)
-        )
-        .shadow(color: Aurora.brand.opacity(0.26), radius: 18, x: 0, y: 10)
     }
 
     private var heroDotColor: Color {
@@ -207,25 +194,25 @@ struct OverviewScreen: View {
 
     private var heroDivider: some View {
         Rectangle()
-            .fill(Color.white.opacity(0.20))
-            .frame(width: 1, height: 28)
-            .padding(.horizontal, 10)
+            .fill(Aurora.hairline)
+            .frame(width: 0.5, height: 28)
+            .padding(.horizontal, 12)
     }
 
     private func heroStat(_ label: String, _ value: String, _ note: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
-                .font(.system(size: 10.5, weight: .medium))
-                .foregroundStyle(Color.white.opacity(0.72))
+                .font(.system(size: 12))
+                .foregroundStyle(Aurora.muted)
             Text(value)
-                .font(.system(size: 20, weight: .bold, design: .rounded))
-                .foregroundStyle(Color.white)
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(Aurora.ink)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
                 .monospacedDigit()
             Text(note)
-                .font(.system(size: 9.5, weight: .regular))
-                .foregroundStyle(Color.white.opacity(0.62))
+                .font(.system(size: 11))
+                .foregroundStyle(Aurora.muted)
                 .lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -719,18 +706,13 @@ struct OverviewScreen: View {
         .padding(.vertical, 8)
         .frame(width: 120, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .fill(Aurora.surfaceVariant.opacity(0.55))
+            RoundedRectangle(cornerRadius: AuroraMetrics.controlRadius, style: .continuous)
+                .fill(Aurora.surfaceVariant)
         )
     }
 
     private func insightColor(_ tone: PanelLocalInsight.Tone) -> Color {
-        switch tone {
-        case .brand: return Aurora.brand
-        case .teal: return Aurora.teal
-        case .rose: return Aurora.rose
-        case .ink: return Aurora.ink
-        }
+        Aurora.ink
     }
 
     // MARK: - 小工具

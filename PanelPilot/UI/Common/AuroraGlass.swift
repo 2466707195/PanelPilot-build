@@ -18,49 +18,18 @@ struct GlassSurface<S: InsettableShape>: View {
 
     var shape: S
     var strokeWidth: CGFloat = 1
-    var shadowRadius: CGFloat = 10
-    /// 白色高光强度。列表上的小控件可以调低，避免糊成一片白。
-    var highlight: Double = 0.30
-    /// 染色（主按钮 / 选中胶囊）。nil 表示纯无色玻璃。
+    var shadowRadius: CGFloat = 12
+    var highlight: Double = 0.34
     var tint: Color? = nil
-    /// 染色强度
-    var tintStrength: Double = 0.14
+    var tintStrength: Double = 0
 
+    /// 这套风格不用毛玻璃：统一实白（或极浅灰）底，靠明度差分层。
     var body: some View {
         shape
-            .fill(.ultraThinMaterial)
+            .fill(tint.map { $0.opacity(tintStrength) } ?? Aurora.surface)
             .overlay(
-                shape.fill(
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(highlight),
-                            Color.white.opacity(highlight * 0.18)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
+                shape.strokeBorder(Aurora.line, lineWidth: 0.5)
             )
-            .overlay(
-                Group {
-                    if let tint {
-                        shape.fill(tint.opacity(tintStrength))
-                    }
-                }
-            )
-            .overlay(
-                shape.strokeBorder(
-                    LinearGradient(
-                        colors: tint == nil
-                            ? [Color.white.opacity(0.86), Color.white.opacity(0.28)]
-                            : [tint!.opacity(0.42), Color.white.opacity(0.34)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: strokeWidth
-                )
-            )
-            .shadow(color: Color.black.opacity(0.06), radius: shadowRadius, x: 0, y: 3)
     }
 }
 
