@@ -231,13 +231,13 @@ struct MessageMarkdown: View {
     private func blockView(_ kind: MessageBlock.Kind) -> some View {
         switch kind {
         case let .heading(level, content):
-            Text(inline(content, size: level <= 2 ? 18 : 16.5, weight: .semibold))
+            inline(content, size: level <= 2 ? 18 : 16.5, weight: .semibold)
                 .foregroundStyle(Aurora.ink)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 2)
 
         case let .paragraph(content):
-            Text(inline(content))
+            inline(content)
                 .foregroundStyle(Aurora.ink)
                 .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
@@ -250,7 +250,7 @@ struct MessageMarkdown: View {
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(Aurora.muted)
                             .frame(width: 10, alignment: .leading)
-                        Text(inline(item))
+                        inline(item)
                             .foregroundStyle(Aurora.ink)
                             .lineSpacing(3)
                             .fixedSize(horizontal: false, vertical: true)
@@ -266,7 +266,7 @@ struct MessageMarkdown: View {
                             .font(.system(size: 14, weight: .semibold, design: .monospaced))
                             .foregroundStyle(Aurora.muted)
                             .frame(minWidth: 16, alignment: .leading)
-                        Text(inline(item))
+                        inline(item)
                             .foregroundStyle(Aurora.ink)
                             .lineSpacing(3)
                             .fixedSize(horizontal: false, vertical: true)
@@ -279,7 +279,7 @@ struct MessageMarkdown: View {
                 Capsule()
                     .fill(Aurora.brand.opacity(0.35))
                     .frame(width: 2.5)
-                Text(inline(content, color: Aurora.inkSoft))
+                inline(content, color: Aurora.inkSoft)
                     .lineSpacing(3)
                     .fixedSize(horizontal: false, vertical: true)
             }
