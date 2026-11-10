@@ -265,6 +265,11 @@ final class AppModel: ObservableObject {
     /// 当前打开的历史会话（用于高亮）
     @Published var loadedSessionID: String?
 
+    // MARK: - 实时推送
+
+    /// SSE 通道是否在线。在线时轮询降频成兜底（60s），不在线时退回 12s。
+    @Published private(set) var pushLive = false
+
     // MARK: - 全局
 
     @Published var toast: Toast?
@@ -278,6 +283,12 @@ final class AppModel: ObservableObject {
 
     private var pollTask: Task<Void, Never>?
     private var pollTick = 0
+    private var pushChannel: PushChannel?
+    private var pushDebounce: Task<Void, Never>?
+    /// 推送很密（比如上游一直在跑请求）时，最多 1.5 秒刷一次界面
+    private var lastPushRefresh = Date.distantPast
+    /// 全量仪表盘（9 个请求）的节流时间戳
+    private var lastFullDashboard = Date.distantPast
     private var chatTask: Task<Void, Never>?
     private var bag = Set<AnyCancellable>()
     private let profilesKey = "panel.profiles.v1"
@@ -516,6 +527,8 @@ final class AppModel: ObservableObject {
     }
 
     private func resetRuntimeState() {
+        // 换服务器/断开时把推送通道一起收掉，否则会连着上一个面板的事件流。
+        stopPushChannel()
         state = .idle
         health = nil
         latency = nil
@@ -756,6 +769,8 @@ final class AppModel: ObservableObject {
             state = result.health.isHealthy ? .online : .degraded(result.health.statusText)
             if authorized {
                 await loadDashboard(force: true)
+                // 连上了就把推送通道挂上去：之后面板一有变化，这里会立刻收到
+                startPushChannel()
             }
         } catch {
             handle(failure: error)
@@ -794,6 +809,7 @@ final class AppModel: ObservableObject {
 
     func disconnect() {
         pollTask?.cancel()
+        stopPushChannel()
         resetRuntimeState()
     }
 
@@ -1950,7 +1966,10 @@ final class AppModel: ObservableObject {
         pollTask?.cancel()
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 12_000_000_000)
+                // 推送在线时这段时间只是兜底（防推送静默挂掉），所以拉长到 60s；
+                // 推送没握手成功才用 12s 的老节奏。
+                let interval: UInt64 = (self?.pushLive ?? false) ? 60_000_000_000 : 12_000_000_000
+                try? await Task.sleep(nanoseconds: interval)
                 guard let self else { return }
                 if Task.isCancelled { return }
                 guard self.autoRefresh, self.isConfigured else { continue }
@@ -1958,12 +1977,100 @@ final class AppModel: ObservableObject {
                 if self.state.isOnline || self.pollTick % 4 == 0 {
                     await self.poll()
                 }
-                // 每 4 拍（≈32s）顺带把仪表盘的数据换新；失败不影响健康检查。
+                // 每 4 拍顺带把仪表盘的数据换新；推送在线时靠推送触发，这里很少走到。
                 if self.state.isOnline, self.pollTick % 4 == 0 {
                     await self.loadDashboard(force: true)
                 }
             }
         }
+    }
+
+    // MARK: - 推送通道
+
+    /// 订阅「面板数据变了」的 SSE。连不上/没令牌就静默退回轮询，不影响主流程。
+    func startPushChannel() {
+        stopPushChannel()
+        guard autoRefresh,
+              let profile = activeProfile,
+              profile.isValid,
+              !activeToken.isEmpty,
+              let channel = PushChannel(
+                base: profile.rootString,
+                token: activeToken,
+                onState: { [weak self] state in self?.applyPushState(state) },
+                onChange: { [weak self] in self?.schedulePushRefresh() }
+              ) else {
+            pushLive = false
+            return
+        }
+        pushChannel = channel
+        channel.start()
+    }
+
+    func stopPushChannel() {
+        pushChannel?.stop()
+        pushChannel = nil
+        pushDebounce?.cancel()
+        pushDebounce = nil
+        if pushLive { pushLive = false }
+    }
+
+    private func applyPushState(_ state: PushChannel.State) {
+        switch state {
+        case .live:
+            if !pushLive {
+                pushLive = true
+                record("已订阅面板变化推送", ok: true)
+            }
+        case .unauthorized:
+            pushLive = false
+            // 只换一次令牌；换不到（比如密码也过期了）就老实轮询，别再打转
+            Task { [weak self] in
+                guard let self else { return }
+                let ok = await self.loginIfNeeded(force: true)
+                if ok { self.startPushChannel() }
+            }
+        case .idle, .connecting, .failed:
+            pushLive = false
+        }
+    }
+
+    /// 收到 change：合并 400ms 内的连击，且两次刷新至少隔 1.5 秒。
+    ///
+    /// 只刷新「看得见的那点东西」（健康 + 当前区间的统计），
+    /// 全量仪表盘（9 个请求）最多 15 秒一次 —— 上游跑批时面板会被写得很频繁，
+    /// 每次变化都全量拉一遍等于自己 DDoS 自己的机器。
+    private func schedulePushRefresh() {
+        guard autoRefresh, isConfigured else { return }
+        pushDebounce?.cancel()
+        pushDebounce = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled, let self else { return }
+            let now = Date()
+            if now.timeIntervalSince(self.lastPushRefresh) < 1.5 { return }
+            self.lastPushRefresh = now
+
+            await self.poll()
+            await self.refreshStatsForCurrentRange()
+
+            if now.timeIntervalSince(self.lastFullDashboard) > 15 {
+                self.lastFullDashboard = now
+                await self.loadDashboard(force: true)
+            }
+        }
+    }
+
+    /// 只重拉当前区间的 `/api/stats/summary`（切区间不发请求的那套逻辑不动）。
+    private func refreshStatsForCurrentRange() async {
+        guard activeProfile?.isValid == true else { return }
+        let range = statsRange
+        let result = await fetchJSON("/api/stats/summary?range=\(range)")
+        guard let json = result.0 else { return }
+        var parsed = statsByRange
+        parsed[range] = PanelStatsSummary.parse(json, range: range)
+        statsByRange = parsed
+        statsUpdatedAt = Date()
+        persist(json, key: VaultKey.stats(range: range))
     }
 
     func handleBecameActive() {

@@ -135,6 +135,21 @@ struct OverviewScreen: View {
                 .padding(.vertical, 5)
                 .background(Capsule().fill(Aurora.surfaceVariant))
 
+                // 推送在线 = 实时；否则说明还在轮询。
+                if model.pushLive {
+                    HStack(spacing: 5) {
+                        Image(systemName: "bolt.fill")
+                            .font(.system(size: 9, weight: .bold))
+                        Text("实时")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundStyle(Aurora.brand)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(Aurora.brand.opacity(0.1)))
+                    .transition(.opacity)
+                }
+
                 Spacer(minLength: 4)
 
                 Button {
