@@ -7,10 +7,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/install-xcodegen.sh
-      - name: generate and list
+      - name: select 26.3 and list
         run: |
           xcodegen generate
-          echo "--- xcodebuild -list ---"
-          xcodebuild -list -project PanelPilot.xcodeproj 2>&1 | tail -40 || true
-          echo "--- project head ---"
-          head -30 PanelPilot.xcodeproj/project.pbxproj || true
+          sudo xcode-select -s /Applications/Xcode_26.3.app || true
+          xcodebuild -version || true
+          echo "--- list under 26.3 ---"
+          xcodebuild -list -project PanelPilot.xcodeproj 2>&1 | tail -30 || true
+          echo "--- list under 16.4 ---"
+          sudo xcode-select -s /Applications/Xcode_16.4.app || true
+          xcodebuild -list -project PanelPilot.xcodeproj 2>&1 | tail -15 || true
