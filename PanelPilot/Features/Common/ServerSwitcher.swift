@@ -143,7 +143,7 @@ struct ServerSwitcherSheet: View {
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(Aurora.ink)
                         .lineLimit(1)
-                    Text(profile.displayAddress)
+                    Text(profile.displayAddressWithScheme)
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(Aurora.muted)
                         .lineLimit(1)

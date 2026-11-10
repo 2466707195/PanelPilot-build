@@ -73,6 +73,10 @@ struct ChatMessage: Identifiable, Equatable {
 @MainActor
 final class AppModel: ObservableObject {
 
+    /// 公网入口的域名。证书由服务器上的 acme.sh 自动续期，
+    /// App 这边只管认这个域名，不要写死 IP —— IP 没有证书，只能明文。
+    static let secureHost = "qingye.cc.cd"
+
     // MARK: - 配置
 
     @Published private(set) var profiles: [PanelProfile] = []
@@ -448,6 +452,7 @@ final class AppModel: ObservableObject {
            let list = try? JSONDecoder().decode([PanelProfile].self, from: data) {
             profiles = list
         }
+        migrateToSecureEndpoint()
         seedDefaultProfileIfNeeded()
 
         if let raw = UserDefaults.standard.string(forKey: activeKey), let id = UUID(uuidString: raw) {
@@ -457,17 +462,43 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// 老版本把公网入口写成了 `http://8.160.187.185/a2a`：明文、IP、子路径。
+    /// 升级后自动搬到 `https://qingye.cc.cd`，用户不用手动改，也不会继续裸奔。
+    private func migrateToSecureEndpoint() {
+        guard !profiles.isEmpty else { return }
+        var changed = false
+        for index in profiles.indices {
+            var item = profiles[index]
+            guard item.mode == .publicNet, !item.secure else { continue }
+            let host = item.trimmedHost
+            guard host == "8.160.187.185" || host == Self.secureHost else { continue }
+            item.host = Self.secureHost
+            item.port = nil
+            item.secure = true
+            item.pathPrefix = ""
+            item.note = "阿里云 · https 443 反代到 3065（Let's Encrypt）"
+            if item.name == "阿里云面板" { item.name = "青叶面板" }
+            profiles[index] = item
+            changed = true
+        }
+        if changed { persistProfiles() }
+    }
+
     /// 首次启动直接给出这台阿里云面板的入口，用户只需补密码。
     /// 不预填密码：它只该由用户自己输入，App 不内嵌任何凭据。
+    ///
+    /// 地址是域名 + 443，不是 IP + 80：
+    ///   · 服务器在大陆且没有备案，阿里云的备案旁路只拦 80，明文域名根本打不开；
+    ///   · 443 上有 Let's Encrypt 证书，全程 TLS，密码和令牌不会裸奔。
     private func seedDefaultProfileIfNeeded() {
         guard profiles.isEmpty else { return }
         let seeded = PanelProfile(
-            name: "我的面板",
+            name: "青叶面板",
             mode: .publicNet,
-            host: "",
-            port: 80,
-            secure: false,
-            note: "",
+            host: Self.secureHost,
+            port: nil,
+            secure: true,
+            note: "阿里云 · https 443 反代到 3065（Let's Encrypt）",
             pathPrefix: "",
             authMode: .password,
             username: ""

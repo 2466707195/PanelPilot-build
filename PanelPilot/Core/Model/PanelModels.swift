@@ -229,6 +229,11 @@ struct PanelProfile: Identifiable, Codable, Equatable {
         return text + normalizedPathPrefix
     }
 
+    /// 带协议头的地址。界面上用它，一眼能看出这一条是不是 TLS。
+    var displayAddressWithScheme: String {
+        (secure ? "https://" : "http://") + displayAddress
+    }
+
     /// 从粘贴的文本里解析出 host / 端口 / 协议 / 子路径。
     /// 支持 `http://1.2.3.4:3065`、`1.2.3.4:3065`、`http://1.2.3.4/a2a`、`panel.example.com`。
     static func parse(_ text: String, into profile: inout PanelProfile) {

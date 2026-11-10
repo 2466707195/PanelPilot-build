@@ -160,7 +160,7 @@ struct OverviewScreen: View {
                     .font(.system(size: 22, weight: .semibold))
                     .foregroundStyle(Aurora.ink)
                     .lineLimit(1)
-                Text(model.activeProfile?.displayAddress ?? "还没有配置面板地址")
+                Text(model.activeProfile?.displayAddressWithScheme ?? "还没有配置面板地址")
                     .font(.system(size: 13, design: .monospaced))
                     .foregroundStyle(Aurora.inkSoft)
                     .lineLimit(1)

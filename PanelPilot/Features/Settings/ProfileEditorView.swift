@@ -213,7 +213,9 @@ struct ProfileEditorView: View {
                     Text("使用 HTTPS")
                         .font(AuroraFont.titleSmall)
                         .foregroundStyle(Aurora.ink)
-                    Text(draft.secure ? "连接会走 TLS，证书必须受信任" : "明文传输，只建议在内网 / Tailscale 里用")
+                    Text(draft.mode == .publicNet
+                         ? "公网强制 TLS：ATS 已禁止明文，证书由服务器自动续期"
+                         : (draft.secure ? "连接会走 TLS，证书必须受信任" : "明文传输，只建议在内网 / Tailscale 里用"))
                         .font(AuroraFont.bodySmall)
                         .foregroundStyle(Aurora.muted)
                 }
@@ -221,6 +223,7 @@ struct ProfileEditorView: View {
                 Toggle("", isOn: $draft.secure)
                     .labelsHidden()
                     .tint(Aurora.brand)
+                    .disabled(draft.mode == .publicNet)
             }
             .padding(.top, 12)
 

@@ -65,18 +65,18 @@ struct SetupGuideView: View {
         SectionCard {
             SectionTitle(
                 title: "这台面板现在的样子",
-                subtitle: "阿里云 · nginx 的 /a2a 前缀反代到本机 3065"
+                subtitle: "阿里云 · 自有域名 443 反代到本机 3065"
             )
 
             VStack(spacing: 0) {
-                KeyValueRow(label: "访问地址", value: "http://your-panel.example.com", mono: true)
-                KeyValueRow(label: "子路径", value: "a2a", mono: true)
+                KeyValueRow(label: "访问地址", value: "https://panel.example.com", mono: true)
+                KeyValueRow(label: "证书", value: "Let's Encrypt · 90 天自动续期", mono: false)
                 KeyValueRow(label: "认证", value: "管理员账号密码", mono: false)
-                KeyValueRow(label: "链路", value: "手机 → 80 → nginx → 127.0.0.1:3065", mono: true)
+                KeyValueRow(label: "链路", value: "手机 → 443 (TLS) → nginx → 127.0.0.1:3065", mono: true)
             }
             .padding(.top, 8)
 
-            Text("面板装了登录页，所以认证方式要选「账号密码」。登录前它会给一道机器校验题（altcha），App 在本地算完直接交，你不需要点任何验证码。\n\n公网的 3065 端口没有放开，也不需要放开：走 nginx 的 /a2a 前缀就够了，面板本体继续只听回环，暴露面反而更小。")
+            Text("面板装了登录页，所以认证方式要选「账号密码」。登录前它会给一道机器校验题（altcha），App 在本地算完直接交，你不需要点任何验证码。\n\n域名是 HTTPS 的，密码和面板令牌都在 TLS 里传，抓包只能看到一串密文。明文 http 在这台机器上其实走不通：服务器在大陆、域名做不了备案，阿里云的备案旁路只放行 443，80 端口会直接返回 403。\n\n3065 没有、也不需要对外开放：外部只到 443，剩下的由 nginx 在机器内部转发。")
                 .font(AuroraFont.bodySmall)
                 .foregroundStyle(Aurora.inkSoft)
                 .fixedSize(horizontal: false, vertical: true)
