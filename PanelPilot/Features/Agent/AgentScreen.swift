@@ -172,17 +172,36 @@ private struct AssistantPane: View {
             }
 
             if !message.text.isEmpty || message.steps.isEmpty {
-                Text(message.text.isEmpty ? "…" : message.text)
-                    .font(AuroraFont.bodyMedium)
-                    .foregroundStyle(Aurora.ink)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 9)
-                    .background(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(message.role == .user ? Aurora.userBubble : Aurora.surface)
-                    )
-                    .fixedSize(horizontal: false, vertical: true)
+                if message.role == .user {
+                    Text(message.text.isEmpty ? "…" : message.text)
+                        .font(AuroraFont.bodyMedium)
+                        .foregroundStyle(Aurora.ink)
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 9)
+                        .background(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .fill(Aurora.userBubble)
+                        )
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    // 助手回来的是一整段 Markdown：代码块、标题、列表都要排开，
+                    // 直接把原文塞进 Text 会看到「```bash」这种裸符号。
+                    MessageMarkdown(text: message.text.isEmpty ? "…" : message.text)
+                        .padding(.horizontal, 13)
+                        .padding(.vertical, 11)
+                        .background(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .fill(Aurora.surface)
+                        )
+                        .contextMenu {
+                            Button {
+                                UIPasteboard.general.string = message.text
+                            } label: {
+                                Label("复制全文", systemImage: "doc.on.doc")
+                            }
+                        }
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)

@@ -24,6 +24,8 @@ struct AgentConfigPane: View {
     @State private var shareItems: [Any] = []
     @State private var showKey = false
     @State private var copied = false
+    /// 取密钥失败时给一句人话，不然按钮点下去毫无反馈
+    @State private var keyHint: String?
 
     private var preset: AgentPreset {
         AgentPresetCatalog.all.first { $0.id == presetID } ?? AgentPresetCatalog.all[0]
@@ -123,6 +125,13 @@ struct AgentConfigPane: View {
 
     private func prepare() async {
         await model.loadAgentModelCatalog()
+        // 先把面板的网关 Key 拉下来：这一页的「用本机密钥」全靠它，
+        // 之前只读钥匙串里手填过的 key，没填过就永远是空，点了像没反应。
+        await model.loadGatewayKeys()
+        if apiKey.isEmpty, !model.assistantKeyValue.isEmpty {
+            apiKey = model.assistantKeyValue
+            keyHint = nil
+        }
         if provider.isEmpty, let first = model.agentProviders.first {
             provider = first
         }
@@ -130,6 +139,33 @@ struct AgentConfigPane: View {
             modelName = providerModels.first ?? model.assistantModels.first ?? ""
         }
         if baseURL.isEmpty { baseURL = model.defaultBaseURL }
+    }
+
+    /// 取一把能直接用的密钥：面板里启用的网关 Key 优先，其次才是用户以前手填进钥匙串的那把。
+    private func applyLocalKey(explicit: Bool) async {
+        if model.assistantKeyValue.isEmpty {
+            await model.loadGatewayKeys(force: true)
+        }
+        let resolved = model.assistantKeyValue
+        if !resolved.isEmpty {
+            apiKey = resolved
+            keyHint = nil
+            model.haptic()
+            if explicit {
+                model.toast = Toast(text: "已填入面板的网关密钥", kind: .success)
+            }
+            return
+        }
+        let fallback = model.activeAPIKey
+        if !fallback.isEmpty {
+            apiKey = fallback
+            keyHint = nil
+            model.haptic()
+            return
+        }
+        guard explicit else { return }
+        keyHint = "面板还没有返回可用的 Key。先去「设置 → 网关 Key」新建一把，再回来点这里；或者直接点下面的「一键填入」。"
+        model.toast = Toast(text: "没有可用的密钥", kind: .warning)
     }
 
     // MARK: 一键接入
@@ -172,8 +208,7 @@ struct AgentConfigPane: View {
                     .foregroundStyle(Aurora.inkSoft)
 
                     Button("用本机密钥") {
-                        apiKey = model.activeAPIKey
-                        model.haptic()
+                        Task { await applyLocalKey(explicit: true) }
                     }
                     .font(.system(size: 10.5, weight: .semibold))
                     .foregroundStyle(Aurora.brand)
@@ -200,6 +235,13 @@ struct AgentConfigPane: View {
                     RoundedRectangle(cornerRadius: 11, style: .continuous)
                         .stroke(Aurora.line, lineWidth: 1)
                 )
+
+                if let keyHint {
+                    Text(keyHint)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Aurora.danger)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(.top, 10)
 
@@ -226,13 +268,18 @@ struct AgentConfigPane: View {
             HStack(spacing: 8) {
                 MonoButton(text: "一键填入", icon: "wand.and.stars", style: .filled) {
                     if baseURL.isEmpty { baseURL = model.defaultBaseURL }
-                    if apiKey.isEmpty { apiKey = model.activeAPIKey }
+                    if apiKey.isEmpty {
+                        // 网关 Key 才是真正能过 /v1 鉴权的那把，手填的只作兜底
+                        apiKey = model.assistantKeyValue.isEmpty ? model.activeAPIKey : model.assistantKeyValue
+                    }
                     if provider.isEmpty { provider = model.agentProviders.first ?? "" }
                     if modelName.isEmpty { modelName = providerModels.first ?? model.assistantModels.first ?? "" }
                     model.haptic(.medium)
                     model.toast = Toast(
-                        text: "已填入 baseURL / 密钥 / 主模型（还会写入 \(providerModels.count) 个模型）",
-                        kind: .success
+                        text: apiKey.isEmpty
+                            ? "已填入地址与模型；密钥还没拿到，点右侧「用本机密钥」重试"
+                            : "已填入 baseURL / 密钥 / 主模型（还会写入 \(providerModels.count) 个模型）",
+                        kind: apiKey.isEmpty ? .warning : .success
                     )
                 }
                 MonoButton(text: "清空", icon: "eraser", style: .outline) {
