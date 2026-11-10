@@ -151,8 +151,9 @@ enum AuroraMetrics {
     static let controlRadius: CGFloat = 14
     /// 外层卡片圆角
     static let cardRadius: CGFloat = 20
-    /// 浮岛离屏幕底边（不含安全区）
-    static let islandBottom: CGFloat = 26
+    /// 浮岛离屏幕底边（不含安全区）。iOS 26 的玻璃底栏本来就贴得低，
+    /// 26 会显得「悬在半空」，压到 10 才像系统底栏。
+    static let islandBottom: CGFloat = 10
 }
 
 // MARK: - 形状
