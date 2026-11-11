@@ -91,6 +91,8 @@ enum AccountBalanceParser {
         var remaining = number(usage, keys: ["totalLeft", "available", "remaining", "left", "balance"])
         let limit = number(usage, keys: ["limit", "total", "quota"])
         let percent = number(usage, keys: ["remainingPercent", "percent"])
+        /// 总额是「赠送 + 券」拼出来的时，记一句拆分说明
+        var breakdown: String?
 
         // 面板的余额快照里，每个账号是 `{id, usage:{...}, remaining: 1340, ...}`：
         // 有些提供商（autoclaw 这类）自己在 usage 里带 available/remaining，
@@ -99,7 +101,9 @@ enum AccountBalanceParser {
             remaining = number(node, keys: ["remaining", "totalLeft", "left", "balance"])
         }
         if remaining == nil {
-            // workbuddy / CodeBuddy：赠送额度 + 各张券的剩余，加起来才是可用总额
+            // workbuddy / CodeBuddy：赠送额度 + 各张券的剩余，加起来才是可用总额。
+            // 顺手记一句拆分说明 —— 不然「1340」和下面三张券（500+80+80）对不上，
+            // 用户会以为算错了。
             let bonus = number(usage, keys: ["bonusLeft", "bonus", "giftLeft"])
             let credits = usage.arr("credits") ?? []
             let creditSum = credits
@@ -107,8 +111,10 @@ enum AccountBalanceParser {
                 .reduce(0, +)
             if let bonus {
                 remaining = bonus + creditSum
+                breakdown = "含赠送 \(format(bonus)) + 券 \(format(creditSum))"
             } else if !credits.isEmpty {
                 remaining = creditSum
+                breakdown = "券合计 \(format(creditSum))"
             }
         }
 
@@ -126,6 +132,8 @@ enum AccountBalanceParser {
             result.secondary = "剩 \(format(remaining)) / \(format(limit))\(unit.isEmpty ? "" : " \(unit)")"
         } else if let percent, result.primary != "\(Int(percent.rounded()))%" {
             result.secondary = "剩 \(Int(percent.rounded()))%"
+        } else if let breakdown {
+            result.secondary = breakdown
         }
 
         // 额外指标：items[] / quotaSources[]（后者在有的版本里是数组，有的是 {items:[]}）
