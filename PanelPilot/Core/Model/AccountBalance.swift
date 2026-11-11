@@ -88,9 +88,29 @@ enum AccountBalanceParser {
         }
 
         let unit = normalizedUnit(usage.firstString(["unit"]) ?? unitFromSources(usage))
-        let remaining = number(usage, keys: ["totalLeft", "available", "remaining", "left", "balance"])
+        var remaining = number(usage, keys: ["totalLeft", "available", "remaining", "left", "balance"])
         let limit = number(usage, keys: ["limit", "total", "quota"])
         let percent = number(usage, keys: ["remainingPercent", "percent"])
+
+        // 面板的余额快照里，每个账号是 `{id, usage:{...}, remaining: 1340, ...}`：
+        // 有些提供商（autoclaw 这类）自己在 usage 里带 available/remaining，
+        // 有些（workbuddy）只给 `bonusLeft` + `credits[]`，可用总额在**外层** remaining 上。
+        if remaining == nil {
+            remaining = number(node, keys: ["remaining", "totalLeft", "left", "balance"])
+        }
+        if remaining == nil {
+            // workbuddy / CodeBuddy：赠送额度 + 各张券的剩余，加起来才是可用总额
+            let bonus = number(usage, keys: ["bonusLeft", "bonus", "giftLeft"])
+            let credits = usage.arr("credits") ?? []
+            let creditSum = credits
+                .compactMap { number($0, keys: ["remain", "remaining", "left"]) }
+                .reduce(0, +)
+            if let bonus {
+                remaining = bonus + creditSum
+            } else if !credits.isEmpty {
+                remaining = creditSum
+            }
+        }
 
         if result.primary != "不限" {
             if let remaining {
@@ -108,9 +128,12 @@ enum AccountBalanceParser {
             result.secondary = "剩 \(Int(percent.rounded()))%"
         }
 
-        // 额外指标：items[] / quotaSources[account]
+        // 额外指标：items[] / quotaSources[]（后者在有的版本里是数组，有的是 {items:[]}）
         var metrics: [BalanceMetric] = []
-        let items = usage.arr("items") ?? usage.obj("quotaSources")?.arr("items") ?? []
+        let items = usage.arr("items")
+            ?? usage.arr("quotaSources")
+            ?? usage.obj("quotaSources")?.arr("items")
+            ?? []
         for item in items {
             guard metrics.count < 4 else { break }
             let name = item.firstString(["name", "label", "key"]) ?? ""
