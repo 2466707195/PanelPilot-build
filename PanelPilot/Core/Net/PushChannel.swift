@@ -30,7 +30,8 @@ final class PushChannel {
     private let url: URL
     private let token: String
     private let onState: (State) -> Void
-    private let onChange: () -> Void
+    /// `usage`：用量/账号/签到变了；`config`：路由、模型规则、助手会话这类配置变了
+    private let onChange: (_ usage: Bool, _ config: Bool) -> Void
 
     private var task: Task<Void, Never>?
     private(set) var state: State = .idle
@@ -40,7 +41,7 @@ final class PushChannel {
         base: String,
         token: String,
         onState: @escaping (State) -> Void,
-        onChange: @escaping () -> Void
+        onChange: @escaping (_ usage: Bool, _ config: Bool) -> Void
     ) {
         var trimmed = base.trimmingCharacters(in: .whitespacesAndNewlines)
         while trimmed.hasSuffix("/") { trimmed.removeLast() }
@@ -112,12 +113,18 @@ final class PushChannel {
             guard http.statusCode == 200 else { return .failed }
 
             var event = ""
+            var data = ""
             for try await line in bytes.lines {
                 if Task.isCancelled { return .closed }
 
                 if line.hasPrefix(":") { continue }                    // 心跳，不处理
                 if line.hasPrefix("event:") {
                     event = line.dropFirst("event:".count)
+                        .trimmingCharacters(in: .whitespaces)
+                    continue
+                }
+                if line.hasPrefix("data:") {
+                    data = String(line.dropFirst("data:".count))
                         .trimmingCharacters(in: .whitespaces)
                     continue
                 }
@@ -128,15 +135,35 @@ final class PushChannel {
                     update(.live)
                 } else if event == "change" {
                     update(.live)
-                    onChange()
+                    // 服务端会说明「哪一类变了」。老版本的服务端不带 data，
+                    // 这种情况按「用量变了」处理，宁可多刷一次也别漏。
+                    let flags = Self.parse(data)
+                    onChange(flags.usage, flags.config)
                 }
                 event = ""
+                data = ""
             }
             return .closed
         } catch {
             if Task.isCancelled { return .closed }
             return .failed
         }
+    }
+
+    /// `{"seq":12,"ts":...,"usage":true,"config":false}`
+    private static func parse(_ text: String) -> (usage: Bool, config: Bool) {
+        guard !text.isEmpty, let bytes = text.data(using: .utf8) else {
+            return (true, false)
+        }
+        guard let raw = try? JSONSerialization.jsonObject(with: bytes),
+              let object = raw as? [String: Any] else {
+            return (true, false)
+        }
+        let usage = object["usage"] as? Bool ?? true
+        let config = object["config"] as? Bool ?? false
+        // 两个都没标（比如服务端只发了 seq）时，按用量变化处理
+        if !usage && !config { return (true, false) }
+        return (usage, config)
     }
 
     private func update(_ next: State) {
