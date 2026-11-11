@@ -134,6 +134,9 @@ struct PanelAPI {
         config.waitsForConnectivity = false
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.httpAdditionalHeaders = ["Accept": "application/json"]
+        // 默认每域名只给 6 条连接。仪表盘一次要并发 9 个接口，
+        // 多出来的那些只能排在队尾，排在后面的会一直等到超时 —— 看着就是「连接失败」。
+        config.httpMaximumConnectionsPerHost = 10
         return URLSession(configuration: config)
     }()
 

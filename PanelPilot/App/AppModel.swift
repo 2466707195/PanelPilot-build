@@ -289,6 +289,8 @@ final class AppModel: ObservableObject {
 
     private var pollTask: Task<Void, Never>?
     private var pollTick = 0
+    /// 连续失败次数：一次抖动不算断线，两次才翻状态
+    private var pollFailures = 0
     private var pushChannel: PushChannel?
     private var pushDebounce: Task<Void, Never>?
     /// 有事件攒着没处理（刷新进行中时不再叠加，等这一轮跑完）
@@ -309,6 +311,8 @@ final class AppModel: ObservableObject {
 
     /// 单飞登录：并发请求同时遇到 401 时，只会真正登录一次
     private var loginTask: Task<Bool, Never>?
+    /// 上一次「因为 401 主动换令牌」的时间（3 秒内不重复换，避免令牌互相作废）
+    private var lastForcedRefreshAt = Date.distantPast
     /// 每次换到新令牌自增，用来判断「这枚令牌是不是我这次请求用的那枚」
     private var sessionGeneration = 0
     /// 上一次登录被面板拒绝的时间（避免被拒后每拍都再撞一次）
@@ -737,7 +741,17 @@ final class AppModel: ObservableObject {
             return response
         } catch let error as PanelAPIError where error.isAuthFailure {
             let generation = sessionGeneration
-            guard await loginIfNeeded(force: true), let retry = makeAPI(timeout: timeout) else {
+            // 一次刷新会并发打几十个接口。如果每个 401 都 `force` 换一次令牌，
+            // 面板会不停换发新令牌、把彼此作废 —— 表现就是「点一下刷新就连接失败」。
+            // 所以：别人刚换过就直接拿新令牌重试；确实过期了才换，且 3 秒内只换一次。
+            if sessionGeneration == generation,
+               Date().timeIntervalSince(lastForcedRefreshAt) > 3 {
+                lastForcedRefreshAt = Date()
+                _ = await loginIfNeeded(force: true)
+            } else {
+                _ = await loginIfNeeded(force: false)
+            }
+            guard let retry = makeAPI(timeout: timeout) else {
                 throw error
             }
             networkRequestCount &+= 1
@@ -798,6 +812,7 @@ final class AppModel: ObservableObject {
         do {
             let result = try await api.health()
             apply(health: result.health, latency: result.latencyMs)
+            pollFailures = 0
             if result.health.isHealthy {
                 if state != .online { record("恢复在线 · \(result.latencyMs)ms", ok: true) }
                 state = .online
@@ -810,10 +825,19 @@ final class AppModel: ObservableObject {
             let apiError = error as? PanelAPIError
             lastError = apiError?.errorDescription ?? error.localizedDescription
             errorHint = apiError?.hint
-            if state.isOnline {
-                record("连接中断：\(lastError ?? "未知原因")", ok: false)
+            pollFailures &+= 1
+
+            // 一次失败不翻脸：刷新时并发拉几十个接口，健康检查可能只是排在队尾超时。
+            // 连续两次（≈24 秒）都失败才认定断线 —— 否则会出现
+            // 「连接失败 + 延迟 41ms」这种自相矛盾的显示。
+            if pollFailures >= 2 || !state.isOnline {
+                if state.isOnline {
+                    record("连接中断：\(lastError ?? "未知原因")", ok: false)
+                }
+                state = .failed(lastError ?? "连接失败")
+                // 失败就别再留着上一次的延迟数字
+                latency = nil
             }
-            state = .failed(lastError ?? "连接失败")
             // 健康检查本身不要令牌；走到这里只可能是网络/服务问题。
             // 只有面板明确要求登录时才去换令牌，别因为一次抖动就重登。
             if let apiError, case .needLogin = apiError {
@@ -1088,15 +1112,19 @@ final class AppModel: ObservableObject {
         isRefreshing = true
         defer { isRefreshing = false }
 
+        // 先单独探活：这一步必须在连接池空闲时做。
+        // 原来五路并发铺开，健康检查排在几十个接口后面，8 秒超时直接报「连接失败」。
+        await poll()
+
         _ = await loginIfNeeded()
 
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { [weak self] in _ = await self?.poll() }
-            group.addTask { [weak self] in _ = await self?.syncDashboard() }
-            group.addTask { [weak self] in _ = await self?.syncAgents() }
-            group.addTask { [weak self] in _ = await self?.load(page: .routing, force: true) }
-            group.addTask { [weak self] in _ = await self?.load(page: .accounts, force: true) }
-        }
+        // 分阶段推，而不是一次性把四十个请求全扔出去：
+        // 这台面板每处理一个带令牌的请求都要重写一次会话表，扛不住那种并发；
+        // 而 URLSession 对同一域名只有 6 条连接，全排队就是自己把自己超时。
+        await syncDashboard()
+        await syncAgents()
+        await load(page: .routing, force: true)
+        await load(page: .accounts, force: true)
 
         lastRefreshAt = Date()
         if !pushLive { startPushChannel() }
