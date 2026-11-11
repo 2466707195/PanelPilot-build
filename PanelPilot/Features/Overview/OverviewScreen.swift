@@ -282,12 +282,8 @@ struct OverviewScreen: View {
                 trailing: model.statsUpdatedAt?.formatted("HH:mm:ss") ?? (model.statsLoading ? "读取中" : nil)
             )
 
-            SegmentedPills(
-                items: ["today", "yesterday", "7", "30"],
-                title: rangeLabel,
-                selection: rangeBinding
-            )
-            .padding(.top, 9)
+            metricSegmented(["today", "yesterday", "7", "30"], selection: rangeBinding) { rangeLabel($0) }
+                .padding(.top, 10)
 
             LazyVGrid(
                 columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
@@ -374,6 +370,42 @@ struct OverviewScreen: View {
 
     // MARK: - 趋势柱状图
 
+    /// 图表上方的指标切换：一条浅灰轨道 + 白色选中块，固定单行、等分。
+    ///
+    /// 原来用的是会换行的 `SegmentedPills`：选中块是白底，在白卡上等于隐形，
+    /// 看起来就是两个裸文字；一旦换行（「Token」在上一行、「请求」掉到下一行），
+    /// 第二行还会压到图表上去 —— 就是那张截图里「请求」浮在柱子上的样子。
+    /// 换成有轨道的整行控件之后，选中态看得见，也不可能换行或压图。
+    private func metricSegmented<Item: Hashable>(
+        _ items: [Item],
+        selection: Binding<Item>,
+        title: @escaping (Item) -> String
+    ) -> some View {
+        HStack(spacing: 3) {
+            ForEach(items, id: \.self) { item in
+                let active = item == selection.wrappedValue
+                Button {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
+                        selection.wrappedValue = item
+                    }
+                } label: {
+                    Text(title(item))
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(active ? Aurora.ink : Aurora.inkSoft)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 30)
+                        .background(Capsule().fill(active ? Aurora.surface : Color.clear))
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(PressScaleStyle(scale: 0.96))
+            }
+        }
+        .padding(3)
+        .background(Capsule().fill(Aurora.surfaceVariant))
+    }
+
     private var trendCard: some View {
         SectionCard {
             HStack(spacing: 8) {
@@ -381,12 +413,8 @@ struct OverviewScreen: View {
                 Spacer(minLength: 0)
             }
 
-            SegmentedPills(
-                items: TrendMetric.allCases,
-                title: { $0.title },
-                selection: $metric
-            )
-            .padding(.top, 8)
+            metricSegmented(TrendMetric.allCases, selection: $metric) { $0.title }
+                .padding(.top, 10)
 
             if points.isEmpty || peakValue == 0 {
                 emptyHint("这个区间还没有用量记录，换个区间或等有请求后再看")
@@ -397,7 +425,8 @@ struct OverviewScreen: View {
                     selected: $trendSelection,
                     animated: model.chartAnimation
                 )
-                .padding(.top, 12)
+                // 控件和图表之间留够空，别让「请求」看起来像贴在柱子上
+                .padding(.top, 16)
 
                 HStack(spacing: 12) {
                     legendDot(Aurora.brand, "峰值 \(model.displayNumber(peakValue))")
@@ -451,12 +480,8 @@ struct OverviewScreen: View {
                 Spacer(minLength: 0)
             }
 
-            SegmentedPills(
-                items: MixDimension.allCases,
-                title: { $0.title },
-                selection: $mixDimension
-            )
-            .padding(.top, 8)
+            metricSegmented(MixDimension.allCases, selection: $mixDimension) { $0.title }
+                .padding(.top, 10)
 
             if slices.isEmpty || sliceTotal == 0 {
                 emptyHint("这个区间还没有可拆分的 Token 用量")
@@ -473,7 +498,8 @@ struct OverviewScreen: View {
                     )
                     Spacer(minLength: 0)
                 }
-                .padding(.top, 10)
+                // 环形图离上面的切换条太近会显得挤在一起，这里给足 18
+                .padding(.top, 18)
 
                 VStack(spacing: 2) {
                     ForEach(Array(slices.prefix(5).enumerated()), id: \.element.id) { index, slice in
