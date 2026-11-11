@@ -1647,7 +1647,22 @@ final class AppModel: ObservableObject {
     func sendChat(_ text: String) {
         let content = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let pending = attachments
-        guard !content.isEmpty || !pending.isEmpty, !isReplying else { return }
+        guard !content.isEmpty || !pending.isEmpty else { return }
+
+        // 上一轮如果卡死（网络断、任务丢了），isReplying 会一直是 true，
+        // 这时再发消息会被静默拦掉 —— 用户看到的就是「发消息完全没反应」。
+        if isReplying {
+            let waited = replyStartedAt.map { Date().timeIntervalSince($0) } ?? 0
+            if waited > 120 || chatTask == nil || chatTask?.isCancelled == true {
+                stopChat()
+            } else {
+                toast = Toast(
+                    text: "上一条还在回复中（已等 \(Int(waited))s），点右下角停止可以中断",
+                    kind: .warning
+                )
+                return
+            }
+        }
         guard activeProfile?.isValid == true else { return }
         // 没有可用的网关 Key 就不要发：面板只会回「所选 API Key 已失效」。
         guard !assistantKeyValue.isEmpty else {
