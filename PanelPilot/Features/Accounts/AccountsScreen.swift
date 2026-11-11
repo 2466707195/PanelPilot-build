@@ -71,10 +71,15 @@ struct AccountsScreen: View {
                     .frame(maxWidth: .infinity)
                 }
                 .scrollIndicators(.hidden)
-                .refreshable { await model.loadAccounts(force: true) }
+                .refreshable {
+                    await model.loadAccounts(force: true)
+                    await model.loadBalancesQuietly(force: true)
+                }
             }
         }
         .task { await model.loadAccounts() }
+        // 余额单独一条 task：接口慢也不挡账号列表先出来
+        .task { await model.loadBalancesQuietly() }
         .sheet(item: $detail) { account in
             AccountDetailSheet(account: account)
         }
@@ -227,6 +232,8 @@ struct AccountsScreen: View {
                         .font(.system(size: 11.5))
                         .foregroundStyle(Aurora.muted)
                         .lineLimit(1)
+                        // 加了余额之后这一行更长，窄屏上宁可缩一点，也别把到期时间截掉
+                        .minimumScaleFactor(0.85)
                 }
 
                 Spacer(minLength: 4)
@@ -252,10 +259,23 @@ struct AccountsScreen: View {
 
     private func subtitle(_ account: AccountItem) -> String {
         var parts: [String] = [account.statusText]
-        if let balance = account.balance { parts.append("余额 \(balance)") }
+        if let balance = balanceText(account) { parts.append("余额 \(balance)") }
         if let expires = account.expiresAt { parts.append("到期 \(expires)") }
         if let proxy = account.proxy { parts.append(proxy) }
         return parts.joined(separator: " · ")
+    }
+
+    /// 余额：`/api/accounts` 里通常没有这个字段，真正的值在「余额快照」里。
+    /// 两个来源都认，谁有就用谁，都没有就不显示（不写「未查询」，那只是噪音）。
+    private func balanceText(_ account: AccountItem) -> String? {
+        if let text = account.balance?.trimmingCharacters(in: .whitespaces), !text.isEmpty {
+            return text
+        }
+        guard let parsed = model.balanceByAccount[account.id],
+              !parsed.hasError,
+              !parsed.primary.isEmpty,
+              parsed.primary != "未查询" else { return nil }
+        return parsed.primary
     }
 }
 

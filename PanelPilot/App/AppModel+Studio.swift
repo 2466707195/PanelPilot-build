@@ -180,8 +180,11 @@ extension AppModel {
         }
     }
 
-    /// 查询余额：`GET /api/accounts/usage`
-    func queryBalances() async {
+    /// 查询余额：`GET /api/accounts/usage/snapshot`
+    ///
+    /// `silent: true` 用于「进账号页顺手拉一次」：不弹 toast、不报错弹窗，
+    /// 失败就让列表继续显示上一次的数字（余额不是主功能，不该打扰人）。
+    func queryBalances(silent: Bool = false) async {
         guard activeProfile?.isValid == true else { return }
         balancesLoading = true
         balanceError = nil
@@ -196,13 +199,30 @@ extension AppModel {
             balanceByAccount.merge(parsed) { _, new in new }
             balancesUpdatedAt = Date()
             noteLocalCompute()
-            toast = Toast(text: "余额已更新（\(parsed.count) 个账号）", kind: parsed.isEmpty ? .warning : .success)
+            if !silent {
+                toast = Toast(text: "余额已更新（\(parsed.count) 个账号）", kind: parsed.isEmpty ? .warning : .success)
+            }
         } catch {
             let apiError = error as? PanelAPIError
             balanceError = apiError?.errorDescription ?? error.localizedDescription
-            toast = Toast(text: "查询余额失败：\(balanceError ?? "")", kind: .error)
+            if !silent {
+                toast = Toast(text: "查询余额失败：\(balanceError ?? "")", kind: .error)
+            }
         }
         balancesLoading = false
+    }
+
+    /// 进账号页时自动补一次余额。
+    ///
+    /// 列表里每个账号的副标题都要带余额，不能等用户点「查询余额」才出现；
+    /// 但也没必要每次进页面都打一次接口 —— 5 分钟内的结果够新。
+    func loadBalancesQuietly(force: Bool = false) async {
+        guard activeProfile?.isValid == true else { return }
+        if !force, !balanceByAccount.isEmpty, let at = balancesUpdatedAt,
+           Date().timeIntervalSince(at) < 300 {
+            return
+        }
+        await queryBalances(silent: true)
     }
 
     /// 单账号实时查询：`GET /api/accounts/usage?id=`（会真的打一次上游，慢一点）
