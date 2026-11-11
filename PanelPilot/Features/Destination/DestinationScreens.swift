@@ -52,7 +52,9 @@ struct GenericSubPage: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: AuroraMetrics.cardSpacing) {
                         ForEach(page.spec.sections) { section in
-                            DataSection(page: page, section: section)
+                            if shows(section) {
+                                DataSection(page: page, section: section)
+                            }
                         }
                     }
                     .padding(.horizontal, AuroraMetrics.pagePadding)
@@ -66,5 +68,17 @@ struct GenericSubPage: View {
             }
         }
         .onAppear { Task { await model.load(page: page) } }
+    }
+
+    /// 可选区块遇到 404 就直接不显示。
+    ///
+    /// 面板版本不同，`/api/models/mappings`、`/api/models/capabilities`、
+    /// `/api/models/custom` 这些接口可能根本不存在。以前会给每个不存在的接口
+    /// 甩一张红色「读取失败 + 重试」，用户点一百次也变不出接口来 —— 纯噪音。
+    private func shows(_ section: PanelSectionSpec) -> Bool {
+        guard section.optional else { return true }
+        let data = model.data(page: page, section: section)
+        if let error = data.error, error.contains("404") { return false }
+        return true
     }
 }

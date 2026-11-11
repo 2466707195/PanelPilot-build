@@ -199,10 +199,21 @@ struct SmartFieldList: View {
 
     private var groups: [SmartFieldGroup] {
         PanelFieldBuilder.groups(from: json).compactMap { group in
-            let fields = group.fields.filter { !skipping.contains($0.path) }
+            let fields = group.fields.filter { field in
+                guard !skipping.contains(field.path) else { return false }
+                // 空值（— / 无 / null / 空串）默认不显示：
+                // 一屏「Aliases 无 / CAP Overrides 无 / Credits —」全是噪音，
+                // 真正有信息的字段反而被淹掉。
+                return !isBlank(field)
+            }
             guard !fields.isEmpty else { return nil }
             return SmartFieldGroup(id: group.id, title: group.title, fields: fields)
         }
+    }
+
+    private func isBlank(_ field: SmartField) -> Bool {
+        let text = field.value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty || text == "—" || text == "-" || text == "无" || text.lowercased() == "null"
     }
 
     var body: some View {
@@ -360,15 +371,31 @@ struct SmartFieldRow: View {
     }
 
     private var value: some View {
-        Text(field.value)
-            .font(valueFont)
-            .foregroundStyle(valueColor)
-            .lineLimit(stacked ? 4 : 3)
-            .truncationMode(.middle)
-            .multilineTextAlignment(.leading)
-            .textSelection(.enabled)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        Group {
+            if case .flag = field.kind {
+                // 是 / 否：胶囊比一行彩色文字更像「状态」，也更容易扫
+                let on = field.value == "是"
+                Text(field.value)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(on ? Aurora.success : Aurora.muted)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 2)
+                    .background(
+                        Capsule().fill((on ? Aurora.success : Aurora.muted).opacity(0.12))
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text(field.value)
+                    .font(valueFont)
+                    .foregroundStyle(valueColor)
+                    .lineLimit(stacked ? 4 : 3)
+                    .truncationMode(.middle)
+                    .multilineTextAlignment(.leading)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
     }
 
     private var valueFont: Font {

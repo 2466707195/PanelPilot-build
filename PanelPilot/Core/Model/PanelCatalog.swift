@@ -142,6 +142,10 @@ struct PanelSectionSpec: Identifiable {
     var actions: [PanelActionSpec] = []
     /// 折叠展示：默认收起，点开才请求（日志、原始记录这类大块）
     var collapsed: Bool = false
+    /// 可选区块：面板版本不同，接口可能根本不存在（404）。
+    /// 这类区块 404 时**直接不显示**，不要甩一张红色「读取失败 + 重试」给用户 ——
+    /// 他点一百次重试也变不出一个不存在的接口。
+    var optional: Bool = false
 
     /// 完整请求路径（把 query 拼上）
     var fullPath: String {
@@ -509,7 +513,8 @@ enum PanelCatalog {
                         confirm: "删除这条模型映射？",
                         icon: "trash"
                     )
-                ]
+                ],
+                optional: true
             ),
             PanelSectionSpec(
                 id: "metadata", title: "模型元数据", path: "/api/models/metadata",
@@ -524,7 +529,7 @@ enum PanelCatalog {
             ),
             PanelSectionSpec(
                 id: "capabilities", title: "能力标记", path: "/api/models/capabilities",
-                style: .auto, emptyText: "没有能力数据"
+                style: .auto, emptyText: "没有能力数据", optional: true
             ),
             PanelSectionSpec(
                 id: "custom", title: "自定义模型", path: "/api/models/custom",
@@ -538,7 +543,8 @@ enum PanelCatalog {
                         confirm: "删除这个自定义模型？",
                         icon: "trash"
                     )
-                ]
+                ],
+                optional: true
             ),
             PanelSectionSpec(
                 id: "compact", title: "紧凑路由", path: "/api/models/compact-routes",

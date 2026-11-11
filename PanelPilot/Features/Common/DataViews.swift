@@ -45,6 +45,21 @@ enum PanelFormat {
             if let number = row.int(key) { return "\(number)" }
         }
         if let id = row.firstString(["id", "uuid", "key"]) { return id }
+        // 还没命中：从对象里挑第一个「像名字」的字符串。
+        // 否则一屏全是「第 1 项 →」「第 2 项 →」，标题等于没写。
+        if let dict = row.objectValue {
+            let skip: Set<String> = [
+                "enabled", "disabled", "status", "state", "ok", "success",
+                "type", "kind", "id", "uuid", "key", "createdat", "updatedat"
+            ]
+            for pair in dict.sorted(by: { $0.key < $1.key }) {
+                guard !skip.contains(pair.key.lowercased()) else { continue }
+                if let text = pair.value.stringValue,
+                   !text.isEmpty, text.count <= 60, text != "0" {
+                    return text
+                }
+            }
+        }
         return fallback
     }
 

@@ -191,6 +191,25 @@ enum PanelFields {
         "expiresat": .init(label: "过期时间", icon: "hourglass", kind: .timestamp, order: 90),
         "expiresin": .init(label: "剩余有效期", icon: "hourglass", kind: .duration, order: 91),
         "createdat": .init(label: "创建时间", icon: "calendar", kind: .timestamp, order: 92),
+
+        // --- 模型的别名 / 能力 / 额度（/api/models/manage 的单条详情）---
+        "aliases": .init(label: "别名", icon: "tag", kind: .text, order: 10),
+        "capoverrides": .init(label: "能力覆盖", icon: "slider.horizontal.3", kind: .text, order: 20),
+        "capsources": .init(label: "能力来源", icon: "arrow.triangle.branch", kind: .text, order: 21),
+        "capabilities": .init(label: "能力", icon: "sparkles", kind: .text, order: 22),
+        "supportsimages": .init(label: "支持图片", icon: "photo", kind: .flag, order: 30),
+        "supportsreasoning": .init(label: "支持推理", icon: "brain", kind: .flag, order: 31),
+        "supportstoolcall": .init(label: "支持工具调用", icon: "wrench.and.screwdriver", kind: .flag, order: 32),
+        "supportsvideo": .init(label: "支持视频", icon: "video", kind: .flag, order: 33),
+        "supportsaudio": .init(label: "支持音频", icon: "waveform", kind: .flag, order: 34),
+        "maxinputtoken": .init(label: "最大输入 Token", icon: "arrow.down.right", kind: .count, order: 40),
+        "maxoutputtoken": .init(label: "最大输出 Token", icon: "arrow.up.right", kind: .count, order: 41),
+        "contextwindow": .init(label: "上下文窗口", icon: "rectangle.expand.vertical", kind: .count, order: 42),
+        "credits": .init(label: "额度", icon: "creditcard", kind: .count, order: 50),
+        "upstream": .init(label: "上游", icon: "arrow.up.forward", kind: .tag, order: 5),
+        "ownedby": .init(label: "归属", icon: "person", kind: .text, order: 60),
+        "promptprice": .init(label: "输入价格", icon: "dollarsign.circle", kind: .text, order: 61),
+        "completionprice": .init(label: "输出价格", icon: "dollarsign.circle", kind: .text, order: 62),
         "updatedat": .init(label: "更新时间", icon: "calendar", kind: .timestamp, order: 93),
         "lastusedat": .init(label: "最近使用", icon: "clock.arrow.circlepath", kind: .timestamp, order: 94),
         "checkedat": .init(label: "检查时间", icon: "clock", kind: .timestamp, order: 95),
@@ -230,7 +249,21 @@ enum PanelFields {
         "cache": "缓存",
         "build": "构建",
         "license": "许可",
-        "system": "系统"
+        "system": "系统",
+
+        // --- 模型清单 / 能力 ---
+        "aliases": "模型别名",
+        "capoverrides": "能力覆盖",
+        "capsources": "能力来源",
+        "capabilities": "能力支持",
+        "credits": "额度与积分",
+        "pricing": "价格",
+        "model": "模型",
+        "models": "模型",
+        "metadata": "元数据",
+        "mappings": "映射",
+        "custom": "自定义",
+        "compactroutes": "紧凑路由"
     ]
 
     /// 分组排序
@@ -238,7 +271,9 @@ enum PanelFields {
         "app", "runtime", "deployment", "position", "location",
         "security", "stats", "session", "update", "panel",
         "db", "database", "network", "proxy", "proxies",
-        "limits", "quota", "cache", "config", "build", "license", "system"
+        "limits", "quota", "cache", "config", "build", "license", "system",
+        "model", "models", "aliases", "capabilities", "capoverrides",
+        "capsources", "credits", "pricing", "metadata", "mappings", "custom"
     ]
 
     // MARK: 枚举翻译
@@ -365,6 +400,14 @@ enum PanelFields {
         "exe": "程序", "path": "路径", "installer": "安装器", "local": "本地",
         "panel": "面板", "service": "服务", "name": "名称", "security": "安全",
         "api": "API", "key": "Key", "keys": "Key", "count": "数量",
+        "cap": "能力", "overrides": "覆盖", "sources": "来源", "supports": "支持",
+        "images": "图片", "image": "图片", "reasoning": "推理", "tool": "工具",
+        "call": "调用", "calls": "调用", "video": "视频", "audio": "音频",
+        "max": "最大", "input": "输入", "output": "输出", "token": "Token",
+        "context": "上下文", "window": "窗口", "upstream": "上游",
+        "aliases": "别名", "alias": "别名", "credits": "额度", "credit": "额度",
+        "pricing": "价格", "price": "价格", "prompt": "输入", "completion": "输出",
+        "owned": "归属", "owner": "归属", "by": "者",
         "admin": "管理员", "username": "用户名", "auth": "认证", "mode": "方式",
         "tls": "HTTPS", "only": "仅", "require": "要求", "cors": "跨域",
         "origins": "来源", "session": "会话", "stats": "统计", "accounts": "账号",

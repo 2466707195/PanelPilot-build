@@ -83,6 +83,8 @@ struct OverviewScreen: View {
                     .padding(.bottom, AuroraMetrics.listBottomInset)
                     .frame(maxWidth: 640)
                     .frame(maxWidth: .infinity)
+                    // 万一某个子视图算出来的宽度超了，也不要让它把整页撑宽
+                    .clipped()
                 }
                 .scrollIndicators(.hidden)
                 .refreshable { await model.refreshAll() }
@@ -332,16 +334,21 @@ struct OverviewScreen: View {
             .padding(.top, 10)
 
             if !model.localInsights.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(model.localInsights) { item in
-                            insightChip(item)
-                        }
+                // 两列网格，而不是横向滚动条：
+                // 横向滚动的内容宽度是「数据驱动」的，30 天时模型名一长，
+                // 整页的宽度就会被它撑开，看起来像整个面板被放大、还能左右拖。
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(), spacing: 8),
+                        GridItem(.flexible(), spacing: 8)
+                    ],
+                    spacing: 8
+                ) {
+                    ForEach(model.localInsights) { item in
+                        insightChip(item)
                     }
-                    .padding(.horizontal, 1)
                 }
                 .padding(.top, 10)
-
             }
 
             if let error = model.statsError, model.stats == nil {
@@ -788,7 +795,7 @@ struct OverviewScreen: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .frame(width: 120, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: AuroraMetrics.controlRadius, style: .continuous)
                 .fill(Aurora.surfaceVariant)
