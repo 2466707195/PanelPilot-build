@@ -119,10 +119,14 @@ final class AppModel: ObservableObject {
 
     // MARK: - 本地引擎计量（证明交互没有偷偷发请求）
 
-    /// 本次运行真正发出去的网络请求数
-    @Published private(set) var networkRequestCount = 0
-    /// 本次运行在本地完成的计算 / 渲染次数
-    @Published private(set) var localComputeCount = 0
+    /// 本次运行真正发出去的网络请求数。
+    ///
+    /// **故意不加 `@Published`**：它每发一次请求就 +1，而 AppModel 是全局单例，
+    /// 一个属性的 `objectWillChange` 会让五个 Tab 里所有存活视图全部重算一遍 body。
+    /// 滚动时正好赶上后台刷新，就是肉眼可见的掉帧。诊断页按需读取它们就够了。
+    private(set) var networkRequestCount = 0
+    /// 本次运行在本地完成的计算 / 渲染次数（同上，不发布）
+    private(set) var localComputeCount = 0
     /// 本地快照条目数
     @Published private(set) var vaultEntryCount = 0
     @Published private(set) var vaultNewest: Date?
@@ -863,7 +867,15 @@ final class AppModel: ObservableObject {
     private func apply(health newValue: PanelHealth, latency value: Int) {
         if health != newValue { health = newValue }
         if latency != value { latency = value }
-        lastChecked = Date()
+        // 「最后检查时间」在界面上只显示到分钟。
+        // 原来每次轮询/推送刷新都赋值一次，等于每秒让五个 Tab 全部重算一遍 body ——
+        // 滚动时正好赶上就是掉帧。同一分钟内不再重复发布。
+        let now = Date()
+        if let last = lastChecked,
+           Calendar.current.isDate(last, equalTo: now, toGranularity: .minute) {
+            return
+        }
+        lastChecked = now
     }
 
     private func handle(failure error: Error) {
@@ -2253,6 +2265,10 @@ final class AppModel: ObservableObject {
         guard activeProfile?.isValid == true else { return }
         let result = await fetchJSON("/api/stats/requests?limit=12")
         guard let json = result.0 else { return }
+        // 内容没变就别赋值：`dashboard` 是 @Published，
+        // 赋一次就让五个 Tab 全部重算 body。推送每 0.8 秒来一次，
+        // 列表没变却一直重绘 —— 滚动时就是掉帧。
+        if dashboard["requests"] == json { return }
         var board = dashboard
         board["requests"] = json
         dashboard = board

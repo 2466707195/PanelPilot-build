@@ -314,7 +314,9 @@ struct DataSection: View {
         if rows.isEmpty {
             empty
         } else {
-            VStack(spacing: 0) {
+            // 懒加载：日志 / 请求这类区块动辄上百行，
+            // 一次性建完再滚动，每次 body 重算都要重新布局整串。
+            LazyVStack(spacing: 0) {
                 ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
                     if index > 0 {
                         Rectangle().fill(Aurora.hairline).frame(height: 1)
@@ -341,7 +343,9 @@ struct DataSection: View {
         if rows.isEmpty {
             empty
         } else {
-            VStack(spacing: 0) {
+            // 懒加载：日志 / 请求这类区块动辄上百行，
+            // 一次性建完再滚动，每次 body 重算都要重新布局整串。
+            LazyVStack(spacing: 0) {
                 ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
                     if index > 0 {
                         Rectangle().fill(Aurora.hairline).frame(height: 1)

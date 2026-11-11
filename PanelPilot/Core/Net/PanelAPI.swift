@@ -263,27 +263,21 @@ struct PanelAPI {
             onToolCalls(calls)
         }
 
-        // 有的网关不吃 `stream:true`，直接回一整个 JSON。
-        // 以前不管三七二十一按行读：对方不关连接就一直挂着，
-        // 用户对着省略号等到 60 秒超时 —— 这就是「有时候做不到及时回复」的来源。
-        let contentType = ((response as? HTTPURLResponse)?
-            .value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
-        if !contentType.contains("text/event-stream") {
-            var raw = Data()
-            for try await byte in bytes { raw.append(byte) }
-            guard let json = try? JSONValue.decode(raw) else {
-                throw PanelAPIError.transport(
-                    "上游返回的内容不是 JSON",
-                    "把输入框的「工具」关掉再问一次，或换一个模型试试。"
-                )
-            }
-            if let piece = Self.deltaText(in: json), !piece.isEmpty { onText(piece) }
-            Self.mergeToolCalls(in: json, into: &toolCalls)
-            flushTools()
-            return
-        }
+        // 一律按行读。
+        //
+        // 上一版按 Content-Type 分流：不是 event-stream 就"攒完整段再解析"。
+        // 结果这台网关返回的 Content-Type 不是 event-stream，但它其实在流式吐数据，
+        // 于是那个 `for byte in bytes` 会一直收、一直不结束 —— 界面永远卡在思考态。
+        // 现在无论什么类型都按行读（SSE 和 NDJSON 都能处理），
+        // 结束时如果一条都没解析出来，再把整段当成一个 JSON 兜底解析。
+        var raw = Data()
+        var produced = false
 
         for try await line in bytes.lines {
+            if raw.count < 2_000_000 {
+                raw.append(contentsOf: line.utf8)
+                raw.append(0x0A)
+            }
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             guard !trimmed.isEmpty else { continue }
             let payload = trimmed.hasPrefix("data:")
@@ -294,14 +288,26 @@ struct PanelAPI {
             guard let data = payload.data(using: .utf8),
                   let json = try? JSONValue.decode(data) else { continue }
             if let piece = PanelAPI.deltaText(in: json), !piece.isEmpty {
+                produced = true
                 onText(piece)
             }
             if PanelAPI.mergeToolCalls(in: json, into: &toolCalls) {
+                produced = true
                 flushTools()
             }
-            // 有的实现发完 finish_reason 不关连接（也没有 [DONE]），
-            // 那就自己收尾，别让界面一直停在"正在回答"。
-            if Self.isFinished(json) { break }
+            // 有的实现发完 finish_reason 不关连接（也没有 [DONE]），自己收尾。
+            // 但必须"已经产出过东西"才算数 —— 第一帧就带空的 finish_reason 的实现也有，
+            // 那样会一个字都不显示就结束。
+            if produced, Self.isFinished(json) { break }
+        }
+
+        // 一条都没解析出来：可能对方回的是整段（多行）JSON。
+        if !produced, !raw.isEmpty, let json = try? JSONValue.decode(raw) {
+            if let piece = Self.deltaText(in: json), !piece.isEmpty {
+                produced = true
+                onText(piece)
+            }
+            Self.mergeToolCalls(in: json, into: &toolCalls)
         }
         flushTools()
     }
@@ -357,8 +363,9 @@ struct PanelAPI {
     /// 这一帧是否已经声明结束（`choices[0].finish_reason` 非空）。
     static func isFinished(_ value: JSONValue) -> Bool {
         if let choices = value.value("choices")?.arrayValue, let first = choices.first {
-            if let reason = first.firstString(["finish_reason"]), !reason.isEmpty { return true }
-            if first.value("finish_reason")?.stringValue != nil { return true }
+            // 只认「非空且不是 null」的 finish_reason；
+            // 空串在不少实现里是常规填充，当结束信号会直接吞掉整段回答。
+            if let reason = first.firstString(["finish_reason"]), reason != "null" { return true }
         }
         if let type = value.firstString(["type"]), type == "done" || type == "end" { return true }
         return false
