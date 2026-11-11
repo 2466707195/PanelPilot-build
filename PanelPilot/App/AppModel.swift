@@ -270,6 +270,12 @@ final class AppModel: ObservableObject {
     /// SSE 通道是否在线。在线时轮询降频成兜底（60s），不在线时退回 12s。
     @Published private(set) var pushLive = false
 
+    /// 「同步」按钮的忙闲状态。放在这里而不是各个页面里：
+    /// 之前点刷新没有任何反馈，用户会连点好几下，叠出好几轮全量请求。
+    @Published private(set) var isRefreshing = false
+    /// 上一次「同步」真正走完的时间（界面上显示成「刚刚 / 12 秒前」）
+    @Published private(set) var lastRefreshAt: Date?
+
     // MARK: - 全局
 
     @Published var toast: Toast?
@@ -529,6 +535,8 @@ final class AppModel: ObservableObject {
     private func resetRuntimeState() {
         // 换服务器/断开时把推送通道一起收掉，否则会连着上一个面板的事件流。
         stopPushChannel()
+        isRefreshing = false
+        lastRefreshAt = nil
         state = .idle
         health = nil
         latency = nil
@@ -984,9 +992,15 @@ final class AppModel: ObservableObject {
 
         _ = await loginIfNeeded()
 
+        // 「读取中」一次性标好：原来是一个区块一次赋值，
+        // 十个区块就是十次 `objectWillChange`，五个 Tab 的视图跟着重算十遍。
+        markLoading(page: page, ids: targets.map(\.id), true)
+
+        // 结果先在本地攒着，全部到齐再发布一次 —— SwiftUI 只重算一遍。
+        var bucket = store[page.rawValue] ?? [:]
+
         await withTaskGroup(of: (String, SectionData).self) { group in
             for section in targets {
-                markLoading(page: page, id: section.id, true)
                 group.addTask { [weak self] in
                     guard let self else { return (section.id, SectionData()) }
                     let result = await self.fetch(page: page, section: section)
@@ -994,7 +1008,6 @@ final class AppModel: ObservableObject {
                 }
             }
             for await (id, result) in group {
-                var bucket = store[page.rawValue] ?? [:]
                 var merged = result
                 // 失败时保留旧数据与旧时间，只换错误文案
                 if result.json == nil, let old = bucket[id] {
@@ -1003,16 +1016,21 @@ final class AppModel: ObservableObject {
                 }
                 merged.loading = false
                 bucket[id] = merged
-                store[page.rawValue] = bucket
             }
         }
+
+        store[page.rawValue] = bucket
     }
 
-    private func markLoading(page: PanelPage, id: String, _ value: Bool) {
+    /// 批量改「读取中」标记：一次赋值，一次发布。
+    private func markLoading(page: PanelPage, ids: [String], _ value: Bool) {
+        guard !ids.isEmpty else { return }
         var bucket = store[page.rawValue] ?? [:]
-        var item = bucket[id] ?? SectionData()
-        item.loading = value
-        bucket[id] = item
+        for id in ids {
+            var item = bucket[id] ?? SectionData()
+            item.loading = value
+            bucket[id] = item
+        }
         store[page.rawValue] = bucket
     }
 
@@ -1047,12 +1065,34 @@ final class AppModel: ObservableObject {
     }
 
     /// 显式同步：这是唯一会「整块重拉」的入口（下拉刷新 / 右上角刷新 / 全部刷新）。
+    ///
+    /// 老实现是 `connect()` → 仪表盘 → Agent → 路由 → 账号 **串行四段**：
+    ///   · 段与段之间互相等待，一次刷新好几秒，期间按钮毫无反馈，
+    ///     用户以为没点上就再点一次，叠出第二轮、第三轮全量请求；
+    ///   · `connect()` 会把连接状态翻成「连接中」并重启推送通道，
+    ///     于是每刷新一次，推送就断一次、状态闪一次。
+    /// 现在：四段并发 + 健康检查并发，不碰连接状态，也不重连推送。
     func refreshAll() async {
-        await connect()
-        await syncAgents()
-        for page in [PanelPage.routing, .accounts] {
-            await load(page: page, force: true)
+        guard !isRefreshing else { return }
+        guard activeProfile?.isValid == true else {
+            await connect()
+            return
         }
+        isRefreshing = true
+        defer { isRefreshing = false }
+
+        _ = await loginIfNeeded()
+
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { [weak self] in _ = await self?.poll() }
+            group.addTask { [weak self] in _ = await self?.syncDashboard() }
+            group.addTask { [weak self] in _ = await self?.syncAgents() }
+            group.addTask { [weak self] in _ = await self?.load(page: .routing, force: true) }
+            group.addTask { [weak self] in _ = await self?.load(page: .accounts, force: true) }
+        }
+
+        lastRefreshAt = Date()
+        if !pushLive { startPushChannel() }
     }
 
     func refresh(page: PanelPage) async {
@@ -1997,8 +2037,15 @@ final class AppModel: ObservableObject {
               let channel = PushChannel(
                 base: profile.rootString,
                 token: activeToken,
-                onState: { [weak self] state in self?.applyPushState(state) },
-                onChange: { [weak self] in self?.schedulePushRefresh() }
+                // 回调是从 URLSession 的线程上来的，必须显式跳回主线程：
+                // 原来直接调 `@MainActor` 方法，等于在后台线程改 UI 状态
+                // （`pushDebounce` / 界面刷新），偶发「收到了但要等下一拍才动」。
+                onState: { [weak self] state in
+                    Task { @MainActor in self?.applyPushState(state) }
+                },
+                onChange: { [weak self] in
+                    Task { @MainActor in self?.schedulePushRefresh() }
+                }
               ) else {
             pushLive = false
             return
@@ -2035,26 +2082,37 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// 收到 change：合并 400ms 内的连击，且两次刷新至少隔 1.5 秒。
+    /// 收到 change：合并 200ms 内的连击，且两次刷新至少隔 0.8 秒。
     ///
-    /// 只刷新「看得见的那点东西」（健康 + 当前区间的统计），
-    /// 全量仪表盘（9 个请求）最多 15 秒一次 —— 上游跑批时面板会被写得很频繁，
-    /// 每次变化都全量拉一遍等于自己 DDoS 自己的机器。
+    /// 三条规则都是为了「变完立刻能看见」：
+    ///   1. 落在节流窗口里的事件**不丢**，只把这次刷新推迟到窗口结束 ——
+    ///      原来的写法在窗口内直接 `return`，事件被吞掉，要等面板下一次变化才更新，
+    ///      看起来就是「推送不及时」（面板刚好只改一次时，手机上就永远差一拍）；
+    ///   2. 健康 / 当前区间统计 / 最近请求 **并发**跑。原来 `poll()` 串在最前面，
+    ///      一个健康检查慢一点，统计就被拖到后面；
+    ///   3. 全量仪表盘（9 个请求）单独节流 10 秒，上游跑批时不至于把自己打爆。
     private func schedulePushRefresh() {
         guard autoRefresh, isConfigured else { return }
         pushDebounce?.cancel()
+
+        let base: Double = 0.2
+        let minGap: Double = 0.8
+        let elapsed = Date().timeIntervalSince(lastPushRefresh)
+        let delay = elapsed >= minGap ? base : max(base, minGap - elapsed)
+
         pushDebounce = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 400_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard !Task.isCancelled, let self else { return }
-            let now = Date()
-            if now.timeIntervalSince(self.lastPushRefresh) < 1.5 { return }
-            self.lastPushRefresh = now
+            self.lastPushRefresh = Date()
 
-            await self.poll()
-            await self.refreshStatsForCurrentRange()
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { [weak self] in _ = await self?.poll() }
+                group.addTask { [weak self] in _ = await self?.refreshStatsForCurrentRange() }
+                group.addTask { [weak self] in _ = await self?.refreshRecentRequests() }
+            }
 
-            if now.timeIntervalSince(self.lastFullDashboard) > 15 {
-                self.lastFullDashboard = now
+            if Date().timeIntervalSince(self.lastFullDashboard) > 10 {
+                self.lastFullDashboard = Date()
                 await self.loadDashboard(force: true)
             }
         }
@@ -2073,9 +2131,33 @@ final class AppModel: ObservableObject {
         persist(json, key: VaultKey.stats(range: range))
     }
 
+    /// 最近请求列表是概览里最常被盯着看的一块，单独给一条轻量刷新路径：
+    /// 原来要等 15 秒一次的全量仪表盘，所以列表总比上面的数字慢半拍。
+    private func refreshRecentRequests() async {
+        guard activeProfile?.isValid == true else { return }
+        let result = await fetchJSON("/api/stats/requests?limit=12")
+        guard let json = result.0 else { return }
+        var board = dashboard
+        board["requests"] = json
+        dashboard = board
+        persist(json, key: VaultKey.dashboard("requests"))
+    }
+
+    /// 回到前台：已经在线就只做一次轻量续命（健康 + 统计 + 最近请求 + 重新订阅推送），
+    /// 不再为了「刷新」把九个请求全拉一遍 —— 那会让回前台的第一屏明显发木。
     func handleBecameActive() {
         guard autoRefresh, isConfigured else { return }
-        Task { await connect() }
+        if state.isOnline {
+            Task { [weak self] in
+                guard let self else { return }
+                self.startPushChannel()
+                await self.poll()
+                await self.refreshStatsForCurrentRange()
+                await self.refreshRecentRequests()
+            }
+        } else {
+            Task { await connect() }
+        }
     }
 
     /// 本地计算计量（扩展文件里用，`private(set)` 在扩展里改不了）。

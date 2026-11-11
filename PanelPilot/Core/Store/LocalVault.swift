@@ -71,24 +71,36 @@ final class LocalVault {
     private var files: [String: VaultFile] = [:]
     private let lock = NSLock()
 
-    private init() {}
+    /// 落盘全部改到这条后台串行队列上。
+    ///
+    /// 原来的写法是「每存一个 key 就把整份快照 JSON 重新编码一次 + 原子写一次」，
+    /// 而 `AppModel` 是 `@MainActor` —— 于是编码和写盘全压在主线程。
+    /// 一次「刷新」要存十几份（4 个统计区间 + 5 份仪表盘 + 各页区块 + Agent），
+    /// 每份都是整文件重编码，主线程被卡几百毫秒到一两秒，
+    /// 表现就是**点右上角刷新，画面直接僵住**。
+    /// 现在：内存改完立刻返回，0.35 秒内的多次改动合并成一次后台写。
+    private let ioQueue = DispatchQueue(label: "com.agent2api.panelpilot.vault", qos: .utility)
+    private var pendingFlush: [String: DispatchWorkItem] = [:]
 
-    // MARK: 路径
+    /// 目录只在 init 时解析一次：原来每次写盘都 `fileExists` + 可能 `createDirectory`，
+    /// 这些也是同步 I/O。
+    private let rootDirectory: URL?
 
-    private var directory: URL? {
+    private init() {
         let manager = FileManager.default
-        guard let base = manager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
-            return nil
+        if let base = manager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            let url = base.appendingPathComponent("PanelPilot", isDirectory: true)
+            if !manager.fileExists(atPath: url.path) {
+                try? manager.createDirectory(at: url, withIntermediateDirectories: true)
+            }
+            rootDirectory = url
+        } else {
+            rootDirectory = nil
         }
-        let url = base.appendingPathComponent("PanelPilot", isDirectory: true)
-        if !manager.fileExists(atPath: url.path) {
-            try? manager.createDirectory(at: url, withIntermediateDirectories: true)
-        }
-        return url
     }
 
     private func fileURL(for profile: UUID) -> URL? {
-        directory?.appendingPathComponent("vault-\(profile.uuidString).json")
+        rootDirectory?.appendingPathComponent("vault-\(profile.uuidString).json")
     }
 
     // MARK: 读写
@@ -121,13 +133,35 @@ final class LocalVault {
         var file = files[profile.uuidString] ?? VaultFile(profile: profile.uuidString, entries: [:])
         file.entries[key] = Entry(savedAt: date, payload: payload)
         files[profile.uuidString] = file
-        let snapshot = file
         lock.unlock()
-        flush(profile: profile, file: snapshot)
+        // 只标脏，不在这里编码、不在这里写盘：调用方在主线程上。
+        scheduleFlush(profile: profile)
     }
 
-    /// 只写磁盘，不动内存结构（调用方已持有正确的内存副本）。
-    private func flush(profile: UUID, file: VaultFile) {
+    /// 合并 0.35 秒内的连续写入，然后到后台队列上编码 + 原子写。
+    private func scheduleFlush(profile: UUID) {
+        let key = profile.uuidString
+        lock.lock()
+        pendingFlush[key]?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.writeToDisk(profile: profile)
+        }
+        pendingFlush[key] = work
+        lock.unlock()
+        ioQueue.asyncAfter(deadline: .now() + 0.35, execute: work)
+    }
+
+    /// 编码 + 原子写。只在 `ioQueue` 上跑（`flushNow` 会同步等它）。
+    private func writeToDisk(profile: UUID) {
+        let key = profile.uuidString
+        lock.lock()
+        guard let file = files[key] else {
+            lock.unlock()
+            return
+        }
+        pendingFlush[key] = nil
+        lock.unlock()
+
         guard let url = fileURL(for: profile) else { return }
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -135,9 +169,25 @@ final class LocalVault {
         try? data.write(to: url, options: .atomic)
     }
 
+    /// 立刻把还没落盘的改动写完（进后台 / 被系统回收前调用）。
+    func flushNow() {
+        lock.lock()
+        let keys = Array(files.keys)
+        lock.unlock()
+        guard !keys.isEmpty else { return }
+        ioQueue.sync {
+            for key in keys {
+                guard let uuid = UUID(uuidString: key) else { continue }
+                self.writeToDisk(profile: uuid)
+            }
+        }
+    }
+
     func remove(profile: UUID) {
         lock.lock()
         files.removeValue(forKey: profile.uuidString)
+        pendingFlush[profile.uuidString]?.cancel()
+        pendingFlush.removeValue(forKey: profile.uuidString)
         lock.unlock()
         if let url = fileURL(for: profile) { try? FileManager.default.removeItem(at: url) }
     }

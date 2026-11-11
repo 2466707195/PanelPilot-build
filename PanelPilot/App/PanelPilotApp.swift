@@ -63,6 +63,10 @@ struct RootView: View {
         .onChange(of: scenePhase) { phase in
             if phase == .active {
                 model.handleBecameActive()
+            } else if phase == .background {
+                // 落盘已经改成后台合并写（0.35 秒一次），进后台前把最后一批写完，
+                // 免得刚同步完就切走、结果快照没留下。
+                LocalVault.shared.flushNow()
             }
         }
         .onAppear {

@@ -61,14 +61,7 @@ struct OverviewScreen: View {
                     HStack(spacing: 6) {
                         ServerChip()
                         StatusPill(text: model.state.title, color: model.state.tint)
-                        GlassIconButton(
-                            systemIcon: "arrow.clockwise",
-                            tint: Aurora.inkSoft,
-                            diameter: 30,
-                            iconSize: 12
-                        ) {
-                            Task { await model.refreshAll() }
-                        }
+                        refreshButton
                     }
                 }
 
@@ -119,6 +112,30 @@ struct OverviewScreen: View {
 
     // MARK: - 头部
 
+    /// 右上角刷新：忙的时候图标自己转，并且**点不动**。
+    /// 之前没有任何反馈，用户会连点几下，叠出好几轮全量请求 —— 越点越卡。
+    private var refreshButton: some View {
+        Button {
+            Task { await model.refreshAll() }
+        } label: {
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(model.isRefreshing ? Aurora.brand : Aurora.inkSoft)
+                .rotationEffect(.degrees(model.isRefreshing ? 360 : 0))
+                .animation(
+                    model.isRefreshing
+                        ? .linear(duration: 0.9).repeatForever(autoreverses: false)
+                        : .easeOut(duration: 0.2),
+                    value: model.isRefreshing
+                )
+                .frame(width: 30, height: 30)
+                .background(GlassSurface(shape: Circle(), shadowRadius: 8, highlight: 0.32))
+                .contentShape(Circle())
+        }
+        .buttonStyle(PressScaleStyle(scale: 0.94))
+        .disabled(model.isRefreshing)
+    }
+
     private var hero: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
@@ -158,7 +175,14 @@ struct OverviewScreen: View {
                     HStack(spacing: 5) {
                         Image(systemName: "arrow.clockwise")
                             .font(.system(size: 11, weight: .bold))
-                        Text(model.statsLoading ? "同步中" : "同步")
+                            .rotationEffect(.degrees(model.isRefreshing ? 360 : 0))
+                            .animation(
+                                model.isRefreshing
+                                    ? .linear(duration: 0.9).repeatForever(autoreverses: false)
+                                    : .easeOut(duration: 0.2),
+                                value: model.isRefreshing
+                            )
+                        Text(model.isRefreshing ? "同步中" : "同步")
                             .font(.system(size: 12, weight: .semibold))
                     }
                     .foregroundStyle(Aurora.brand)
@@ -166,8 +190,10 @@ struct OverviewScreen: View {
                     .frame(height: 30)
                     .background(Capsule().fill(Aurora.surfaceVariant))
                     .contentShape(Capsule())
+                    .opacity(model.isRefreshing ? 0.6 : 1)
                 }
                 .buttonStyle(PressScaleStyle(scale: 0.95))
+                .disabled(model.isRefreshing)
             }
 
             VStack(alignment: .leading, spacing: 4) {
