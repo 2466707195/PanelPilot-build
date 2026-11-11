@@ -291,6 +291,10 @@ final class AppModel: ObservableObject {
     private var pollTick = 0
     private var pushChannel: PushChannel?
     private var pushDebounce: Task<Void, Never>?
+    /// 有事件攒着没处理（刷新进行中时不再叠加，等这一轮跑完）
+    private var pushPending = false
+    /// 正在跑一轮推送刷新：这期间新事件只标记，不打断
+    private var pushRunning = false
     /// 推送很密（比如上游一直在跑请求）时，最多 1.5 秒刷一次界面
     private var lastPushRefresh = Date.distantPast
     /// 全量仪表盘（9 个请求）的节流时间戳
@@ -2059,6 +2063,7 @@ final class AppModel: ObservableObject {
         pushChannel = nil
         pushDebounce?.cancel()
         pushDebounce = nil
+        pushPending = false
         if pushLive { pushLive = false }
     }
 
@@ -2082,38 +2087,59 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// 收到 change：合并 200ms 内的连击，且两次刷新至少隔 0.8 秒。
+    /// 收到 change。
     ///
-    /// 三条规则都是为了「变完立刻能看见」：
-    ///   1. 落在节流窗口里的事件**不丢**，只把这次刷新推迟到窗口结束 ——
-    ///      原来的写法在窗口内直接 `return`，事件被吞掉，要等面板下一次变化才更新，
-    ///      看起来就是「推送不及时」（面板刚好只改一次时，手机上就永远差一拍）；
-    ///   2. 健康 / 当前区间统计 / 最近请求 **并发**跑。原来 `poll()` 串在最前面，
-    ///      一个健康检查慢一点，统计就被拖到后面；
-    ///   3. 全量仪表盘（9 个请求）单独节流 10 秒，上游跑批时不至于把自己打爆。
+    /// 老实现有个要命的毛病：每来一条事件就 `pushDebounce?.cancel()`，
+    /// 而那个 Task 里装的是**整段刷新**。上游一直在写（跑批、连续对话）时，
+    /// 后一条事件会把前一条正在跑的刷新取消掉，`URLSession` 的请求跟着被取消，
+    /// 于是「事件一直在来，界面一直不更新」—— 这就是「推送不及时」的真正原因。
+    ///
+    /// 现在把「等待」和「刷新」拆开：
+    ///   · 新事件只标记 `pushPending = true`，并把定时器往后推 200ms；
+    ///   · 刷新一旦开始就**不被打断**，跑完再看有没有新事件，有就再来一轮；
+    ///   · 两轮之间至少隔 0.8 秒，上游高频写入不会把面板打爆，但也不会丢事件。
     private func schedulePushRefresh() {
         guard autoRefresh, isConfigured else { return }
+        pushPending = true
+        guard !pushRunning else { return }   // 正在刷：跑完自己会再看 pending
+
         pushDebounce?.cancel()
-
-        let base: Double = 0.2
-        let minGap: Double = 0.8
-        let elapsed = Date().timeIntervalSince(lastPushRefresh)
-        let delay = elapsed >= minGap ? base : max(base, minGap - elapsed)
-
         pushDebounce = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            guard !Task.isCancelled, let self else { return }
-            self.lastPushRefresh = Date()
+            // 合并 200ms 内的连击（一次请求落库通常会带出好几条写入）
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            guard let self, !Task.isCancelled else { return }
+            await self.drainPushChanges()
+        }
+    }
 
+    /// 把攒下的事件一轮轮刷完。这个函数里的刷新不会被新事件取消。
+    private func drainPushChanges() async {
+        guard !pushRunning else { return }
+        pushRunning = true
+        defer { pushRunning = false }
+
+        while pushPending {
+            pushPending = false
+
+            let elapsed = Date().timeIntervalSince(lastPushRefresh)
+            if elapsed < 0.8 {
+                let wait = UInt64((0.8 - elapsed) * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: wait)
+            }
+            lastPushRefresh = Date()
+
+            // 健康 / 当前区间统计 / 最近请求 并发跑：
+            // 原来 `poll()` 串在最前面，一个健康检查慢一点统计就被拖到后面。
             await withTaskGroup(of: Void.self) { group in
                 group.addTask { [weak self] in _ = await self?.poll() }
                 group.addTask { [weak self] in _ = await self?.refreshStatsForCurrentRange() }
                 group.addTask { [weak self] in _ = await self?.refreshRecentRequests() }
             }
 
-            if Date().timeIntervalSince(self.lastFullDashboard) > 10 {
-                self.lastFullDashboard = Date()
-                await self.loadDashboard(force: true)
+            // 全量仪表盘（9 个请求）单独节流 10 秒，别让上游把自己打爆
+            if Date().timeIntervalSince(lastFullDashboard) > 10 {
+                lastFullDashboard = Date()
+                await loadDashboard(force: true)
             }
         }
     }
