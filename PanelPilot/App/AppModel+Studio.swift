@@ -746,6 +746,61 @@ extension AppModel {
 
     var assistantKeyValue: String { assistantKey?.value ?? "" }
 
+    /// 手动指定「助手用哪一把 Key」（列表里点一下就切）。
+    func selectAssistantKey(_ id: String) {
+        assistantKeyID = id
+        haptic(.light)
+        toast = Toast(text: "助手改用「\(gatewayKeys.first { $0.id == id }?.name ?? "这个")」", kind: .success)
+    }
+
+    /// 新建网关 Key。
+    ///
+    /// 面板前端只用到 `GET / PATCH / DELETE /api/keys`，没有暴露创建的调用，
+    /// 所以按 REST 约定先打 `POST /api/keys`；有的版本把这套挂在
+    /// `/api/model-access/keys` 上，404/405 就换过去再试一次。
+    /// 两个都不行就把面板的原话带回去，让用户知道该去哪儿建（网页面板）。
+    /// 返回 nil 表示成功。
+    func createGatewayKey(name: String) async -> String? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "先给这把 Key 起个名字" }
+        guard activeProfile?.isValid == true else { return "还没有连接面板" }
+
+        let body: [String: Any] = [
+            "name": trimmed,
+            "allowedModels": [String](),
+            "allowedProviders": [String]()
+        ]
+        var lastMessage = ""
+
+        for path in ["/api/keys", "/api/model-access/keys"] {
+            do {
+                _ = try await authenticatedRequest("POST", path, body: body, timeout: 20)
+                await loadGatewayKeys(force: true)
+                await refresh(page: .gatewayKeys)
+                // 新建出来的那一把直接设为当前，省得用户再切一次
+                if let created = gatewayKeys.first(where: { $0.name == trimmed }) {
+                    assistantKeyID = created.id
+                }
+                haptic(.medium)
+                toast = Toast(text: "已创建「\(trimmed)」", kind: .success)
+                return nil
+            } catch {
+                let apiError = error as? PanelAPIError
+                lastMessage = apiError?.errorDescription ?? error.localizedDescription
+                // 只有「这个路径不存在」才值得换一条路径再试；
+                // 401/400 这类已经说明问题了，别拿同样的请求再撞一次。
+                if let apiError, case .http(let code, _) = apiError, code != 404, code != 405 {
+                    break
+                }
+            }
+        }
+
+        if lastMessage.isEmpty {
+            lastMessage = "面板没有接受这个请求"
+        }
+        return "\(lastMessage)\n如果一直失败，说明这版面板没开放创建接口，先到网页面板的「网关 Key」页新建一把，回来点刷新。"
+    }
+
     /// 优先 `/api/model-access/keys`（助手/模型测试用的那套），回落到 `/api/keys`。
     func loadGatewayKeys(force: Bool = false) async {
         if !force, !gatewayKeys.isEmpty { return }

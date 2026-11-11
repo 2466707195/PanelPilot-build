@@ -58,6 +58,40 @@ struct AuroraBarChart: View {
         max(points.map { metric.value(of: $0) }.max() ?? 0, 1)
     }
 
+    // MARK: 纵轴刻度
+    //
+    // 原来只有横向网格，没有刻度值：柱子多高、跟别人差多少全靠猜，
+    // 「1 天」这种只有一个柱子的区间更是直接变成一整块蓝色，完全没有比例感。
+    // 这里按 1 / 2 / 5 × 10ⁿ 取「好看」的步长，固定分 3 格（4 条线），
+    // 所以刻度范围一定是步长的整数倍，柱子高度也按这个范围算，比例是准的。
+
+    private var scale: (max: Int, step: Int) {
+        let raw = Double(maxValue)
+        let rough = max(raw / 3.0, 1)
+        let magnitude = pow(10, floor(log10(rough)))
+        let normalized = rough / magnitude
+        let nice: Double = normalized <= 1 ? 1 : (normalized <= 2 ? 2 : (normalized <= 5 ? 5 : 10))
+        let step = max(Int(nice * magnitude), 1)
+        return (step * 3, step)
+    }
+
+    /// 步长本身够大（≥ 1 万）就换算成「万」来标，避免 30000000 这种一串零
+    private var usesWan: Bool { scale.step >= 10_000 }
+
+    private var axisUnit: String {
+        if metric == .tokens { return usesWan ? "Token · 万" : "Token" }
+        return usesWan ? "请求 · 万" : "请求 · 次"
+    }
+
+    private func tickText(_ value: Int) -> String {
+        let scaled = usesWan ? value / 10_000 : value
+        return PanelNumber.grouping(scaled)
+    }
+
+    private var tickValues: [Int] {
+        (0...3).map { $0 * scale.step }
+    }
+
     private var labelStep: Int {
         let count = points.count
         if count <= 8 { return 1 }
@@ -65,15 +99,48 @@ struct AuroraBarChart: View {
     }
 
     var body: some View {
-        VStack(spacing: 8) {
-            ZStack(alignment: .bottom) {
-                grid
-                bars
-            }
-            .frame(height: barAreaHeight)
+        VStack(alignment: .leading, spacing: 10) {
+            // 轴名 + 单位：放在纵轴正上方，一眼知道这排数字是什么
+            Text(axisUnit)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(Aurora.muted)
+                .padding(.leading, axisWidth + 6)
 
-            axis
+            HStack(alignment: .top, spacing: 6) {
+                yAxis
+                VStack(spacing: 8) {
+                    ZStack(alignment: .bottom) {
+                        grid
+                        bars
+                    }
+                    .frame(height: barAreaHeight)
+
+                    axis
+                }
+            }
         }
+    }
+
+    private var axisWidth: CGFloat { 34 }
+
+    /// 纵轴：4 个刻度值，和 4 条网格线一一对齐（top 线 = 上限，bottom 线 = 0）
+    private var yAxis: some View {
+        GeometryReader { geo in
+            ForEach(Array(tickValues.enumerated()), id: \.offset) { index, value in
+                Text(tickText(value))
+                    .font(.system(size: 9, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(Aurora.muted)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .frame(width: axisWidth, alignment: .trailing)
+                    .position(
+                        x: axisWidth / 2,
+                        y: geo.size.height * (1 - CGFloat(index) / 3)
+                    )
+            }
+        }
+        .frame(width: axisWidth, height: barAreaHeight)
     }
 
     // MARK: 网格
@@ -95,7 +162,7 @@ struct AuroraBarChart: View {
         HStack(alignment: .bottom, spacing: 5) {
             ForEach(Array(points.enumerated()), id: \.element.id) { index, point in
                 let value = metric.value(of: point)
-                let ratio = CGFloat(value) / CGFloat(maxValue)
+                let ratio = CGFloat(value) / CGFloat(scale.max)
                 let isActive = selected == index
 
                 Button {
@@ -123,7 +190,8 @@ struct AuroraBarChart: View {
                                 isActive ? Aurora.brand : Aurora.brand.opacity(0.55)
                             )
                             .frame(height: max(3, ratio * (barAreaHeight - 16)))
-                            .frame(maxWidth: .infinity)
+                            // 只有一两天数据时，别让一根柱子糊满整张图
+                            .frame(maxWidth: points.count <= 2 ? 76 : .infinity)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                     .contentShape(Rectangle())

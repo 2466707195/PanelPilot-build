@@ -158,6 +158,10 @@ private struct SettingsDetailPane: View {
                 if openedPage == .checkin {
                     // 签到是重点模块，用专门的可视化页面，不再走通用区块渲染
                     CheckinScreen(onBack: { self.openedPage = nil })
+                } else if openedPage == .gatewayKeys {
+                    // 网关 Key 也单独做：通用渲染会把 /api/config 摊成
+                    // 「Data / Success」+ 英文键名，根本读不懂
+                    GatewayKeysScreen(onBack: { self.openedPage = nil })
                 } else {
                     GenericSubPage(page: openedPage, onBack: { self.openedPage = nil })
                 }
