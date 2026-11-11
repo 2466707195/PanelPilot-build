@@ -4,8 +4,10 @@ import SwiftUI
 ///
 /// 设计原则（2.1.0 重做）：
 ///   · **固定版式**：头部状态 → 区间筛选 + KPI → 趋势柱状图 → 用量构成环形图
-///     → 运行态矩阵 → 最近请求 → 快捷操作。七块，永远七块，不再按目录
-///     把十几个只读区块无限往下堆。
+///     → 运行态矩阵 → 最近请求。六块，永远六块，不再按目录把十几个只读区块
+///     无限往下堆。
+///   · **只负责看**：操作按钮（自检 / 同步 / 签到 / 清空粘性）已经搬到
+///     「设置 → 操作」，这一页不再出现任何动作按钮。
 ///   · **一切联动后端**：`/api/stats/summary?range=` 是唯一统计口径，
 ///     切区间 → 请求换 range → KPI / 柱状图 / 环形图一起变。
 ///   · **可交互**：柱子可点选读数、扇区可点选看占比、区间可切、操作可执行。
@@ -21,7 +23,6 @@ struct OverviewScreen: View {
     @State private var mixDimension: MixDimension = .models
     @State private var mixSelection: Int?
     @State private var showAllRequests = false
-    @State private var confirmSticky = false
 
     // MARK: 构成维度
 
@@ -74,7 +75,6 @@ struct OverviewScreen: View {
                         mixCard
                         runtimeCard
                         recentCard
-                        actionsCard
                         footer
                     }
                     .padding(.horizontal, AuroraMetrics.pagePadding)
@@ -92,23 +92,6 @@ struct OverviewScreen: View {
         }
         .task {
             if model.stats == nil { await model.loadDashboard() }
-        }
-        .confirmationDialog(
-            "清除全部粘性会话？",
-            isPresented: $confirmSticky,
-            titleVisibility: .visible
-        ) {
-            Button("清除", role: .destructive) {
-                Task {
-                    await model.runCommand(
-                        "清除粘性",
-                        path: "/api/routing/sticky/clear"
-                    )
-                }
-            }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("粘性会话会重新分配，正在进行的多轮对话可能换到别的账号。")
         }
     }
 
@@ -678,63 +661,6 @@ struct OverviewScreen: View {
         if let status = row.int("status") { return (200..<400).contains(status) }
         if let failed = row.bool("error") { return !failed }
         return true
-    }
-
-    // MARK: - 快捷操作
-
-    private var actionsCard: some View {
-        SectionCard {
-            SectionTitle(title: "本地操作")
-
-            LazyVGrid(
-                columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
-                spacing: 8
-            ) {
-                MonoButton(text: "本地自检", icon: "stethoscope", style: .tonal) {
-                    Task { await model.runDiagnostics() }
-                }
-                MonoButton(text: "复制摘要", icon: "doc.on.doc", style: .tonal) {
-                    model.copySummary()
-                }
-                MonoButton(text: "连接设置", icon: "antenna.radiowaves.left.and.right", style: .tonal) {
-                    NotificationCenter.default.post(name: .openConnectionSettings, object: nil)
-                }
-                MonoButton(text: "刷新页面", icon: "arrow.clockwise", style: .tonal) {
-                    Task { await model.refreshAll() }
-                }
-            }
-            .padding(.top, 10)
-
-            Rectangle()
-                .fill(Aurora.hairline)
-                .frame(height: 1)
-                .padding(.vertical, 14)
-
-            SectionTitle(title: "服务器操作")
-
-            LazyVGrid(
-                columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
-                spacing: 8
-            ) {
-                MonoButton(text: "同步面板", icon: "arrow.clockwise", style: .filled) {
-                    Task { await model.refreshAll() }
-                }
-                MonoButton(
-                    text: model.checkinBusy == "all" ? "签到中…" : "立即签到",
-                    icon: "checkmark.seal",
-                    style: .tonal
-                ) {
-                    Task { await model.checkinAll() }
-                }
-                MonoButton(text: "刷新模型", icon: "cpu", style: .tonal) {
-                    Task { await model.runCommand("刷新模型", path: "/api/models/refresh") }
-                }
-                MonoButton(text: "清空粘性", icon: "pin.slash", style: .danger) {
-                    confirmSticky = true
-                }
-            }
-            .padding(.top, 10)
-        }
     }
 
     // MARK: - 页脚

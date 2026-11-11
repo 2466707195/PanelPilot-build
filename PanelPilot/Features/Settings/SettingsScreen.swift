@@ -16,13 +16,14 @@ struct SettingsScreen: View {
     @EnvironmentObject private var model: AppModel
 
     enum Pane: String, CaseIterable, Identifiable {
-        case general, display, gateway, security, connection, server, about
+        case general, actions, display, gateway, security, connection, server, about
 
         var id: String { rawValue }
 
         var title: String {
             switch self {
             case .general: return "通用"
+            case .actions: return "操作"
             case .display: return "显示"
             case .gateway: return "网关"
             case .security: return "安全"
@@ -35,6 +36,7 @@ struct SettingsScreen: View {
         var icon: String {
             switch self {
             case .general: return "gearshape"
+            case .actions: return "bolt.horizontal.circle"
             case .display: return "paintbrush"
             case .gateway: return "server.rack"
             case .security: return "lock.shield"
@@ -47,6 +49,7 @@ struct SettingsScreen: View {
         var detail: String {
             switch self {
             case .general: return "刷新 · 启动页 · 本地引擎"
+            case .actions: return "自检 · 同步 · 签到 · 模型"
             case .display: return "图表动画 · 数字格式"
             case .gateway: return "版本 · 监听 · 全局路由"
             case .security: return "密码 · 凭证 · 用户名"
@@ -123,7 +126,7 @@ struct SettingsScreen: View {
 
     private var aboutCard: some View {
         HStack(spacing: 6) {
-            Text("面板控制台 \(appVersion)")
+            Text("Agent2API面板 \(appVersion)")
                 .font(.system(size: 10.5))
                 .foregroundStyle(Aurora.muted)
             Spacer(minLength: 4)
@@ -176,6 +179,7 @@ private struct SettingsDetailPane: View {
                             VStack(alignment: .leading, spacing: AuroraMetrics.cardSpacing) {
                                 switch pane {
                                 case .general: GeneralSettings()
+                                case .actions: ActionSettings()
                                 case .display: DisplaySettings()
                                 case .gateway: GatewaySettings(onOpenRouting: jumpToRouting)
                                 case .security: SecuritySettings()
@@ -607,7 +611,7 @@ private struct AboutSettings: View {
 
     var body: some View {
         SectionCard {
-            SectionTitle(title: "面板控制台")
+            SectionTitle(title: "Agent2API面板")
 
             VStack(spacing: 0) {
                 KeyValueRow(label: "版本", value: version, mono: true)
@@ -630,6 +634,91 @@ private struct AboutSettings: View {
 
         SectionCard {
             SectionTitle(title: "致谢")
+        }
+    }
+}
+
+// MARK: - 操作（原「概览」底部那张操作卡）
+
+/// 「本地操作 / 服务器操作」这个两栏按钮组原来挂在概览最底部。
+///
+/// 挪进设置有三个理由：
+///   · 概览是「看」的页面，七块卡片之后才轮到按钮，要滑到底才够得到；
+///   · 概览每次推送刷新都会重算 body，按钮跟着一起重建、看着发抖；
+///   · 这些动作本来就不是「概览数据」的一部分，属于「控制」。
+/// 搬过来后概览只负责看，动作集中一处，以后加动作也不用再动概览。
+private struct ActionSettings: View {
+
+    @EnvironmentObject private var model: AppModel
+
+    @State private var confirmSticky = false
+
+    var body: some View {
+        SectionCard {
+            SectionTitle(title: "本地操作", trailing: "不联网")
+
+            LazyVGrid(
+                columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
+                spacing: 8
+            ) {
+                MonoButton(text: "本地自检", icon: "stethoscope", style: .tonal) {
+                    Task { await model.runDiagnostics() }
+                }
+                MonoButton(text: "复制摘要", icon: "doc.on.doc", style: .tonal) {
+                    model.copySummary()
+                }
+                MonoButton(text: "连接设置", icon: "antenna.radiowaves.left.and.right", style: .tonal) {
+                    NotificationCenter.default.post(name: .openConnectionSettings, object: nil)
+                }
+                MonoButton(text: "刷新页面", icon: "arrow.clockwise", style: .tonal) {
+                    Task { await model.refreshAll() }
+                }
+            }
+            .padding(.top, 10)
+
+            Rectangle()
+                .fill(Aurora.hairline)
+                .frame(height: 1)
+                .padding(.vertical, 14)
+
+            SectionTitle(title: "服务器操作", trailing: "会调面板接口")
+
+            LazyVGrid(
+                columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
+                spacing: 8
+            ) {
+                MonoButton(text: "同步面板", icon: "arrow.clockwise", style: .filled) {
+                    Task { await model.refreshAll() }
+                }
+                MonoButton(
+                    text: model.checkinBusy == "all" ? "签到中…" : "立即签到",
+                    icon: "checkmark.seal",
+                    style: .tonal
+                ) {
+                    Task { await model.checkinAll() }
+                }
+                MonoButton(text: "刷新模型", icon: "cpu", style: .tonal) {
+                    Task { await model.runCommand("刷新模型", path: "/api/models/refresh") }
+                }
+                MonoButton(text: "清空粘性", icon: "pin.slash", style: .danger) {
+                    confirmSticky = true
+                }
+            }
+            .padding(.top, 10)
+        }
+        .confirmationDialog(
+            "清除全部粘性会话？",
+            isPresented: $confirmSticky,
+            titleVisibility: .visible
+        ) {
+            Button("清除", role: .destructive) {
+                Task {
+                    await model.runCommand("清除粘性", path: "/api/routing/sticky/clear")
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("粘性会话会重新分配，正在进行的多轮对话可能换到别的账号。")
         }
     }
 }

@@ -28,7 +28,7 @@ targets:
     info:
       path: PanelPilot/Resources/Info.plist
       properties:
-        CFBundleDisplayName: 面板控制台
+        CFBundleDisplayName: Agent2API面板
         # 引用 build settings，别再写死 —— 写死会出现「MARKETING_VERSION 改了、
         # 包里的版本号没变」的鬼故事（2.6.2 第一次构建就踩了这个坑）。
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
@@ -64,13 +64,13 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.agent2api.PanelPilot
         PRODUCT_NAME: PanelPilot
-        MARKETING_VERSION: "2.7.11"
-        CURRENT_PROJECT_VERSION: "35"
+        MARKETING_VERSION: "2.8.0"
+        CURRENT_PROJECT_VERSION: "36"
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         GENERATE_INFOPLIST_FILE: NO
-        INFOPLIST_KEY_CFBundleDisplayName: 面板控制台
+        INFOPLIST_KEY_CFBundleDisplayName: Agent2API面板
 
 schemes:
   PanelPilot:
