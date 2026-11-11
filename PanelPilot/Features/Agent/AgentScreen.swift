@@ -62,6 +62,8 @@ struct AgentScreen: View {
                 await model.load(page: .agentAssistant)
                 await model.loadAgents()
                 await model.loadAssistantModels()
+                // 模型菜单要按「供应商 → 模型」分组，必须有这份目录
+                await model.loadAgentModelCatalog()
                 await model.loadGatewayKeys()
                 await model.loadSessions()
             }
@@ -115,6 +117,21 @@ private struct AssistantPane: View {
 
     private var trimmed: String {
         input.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+
+    /// 模型菜单里的一项：选中打勾。供应商由外面的 `Section` 标题给出。
+    private func modelChoice(_ name: String) -> some View {
+        Button {
+            model.assistantModel = name
+            model.haptic()
+        } label: {
+            if model.assistantModel == name {
+                Label(name, systemImage: "checkmark")
+            } else {
+                Text(name)
+            }
+        }
     }
 
     private var hasKey: Bool { !model.assistantKeyValue.isEmpty }
@@ -268,10 +285,14 @@ private struct AssistantPane: View {
                             .font(.system(size: 10, weight: .bold))
                         Text("工具")
                             .font(.system(size: 11.5, weight: .semibold))
+                            .lineLimit(1)
                     }
                     .foregroundStyle(model.assistantToolsEnabled ? Aurora.brand : Aurora.inkSoft)
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, 9)
                     .frame(height: 28)
+                    // 三个胶囊并排时会被 HStack 压缩：不锁死的话「完全访问」会折成两行，
+                    // 于是两字按钮比四字按钮还宽 —— 看起来就是「尺寸乱」
+                    .fixedSize(horizontal: true, vertical: false)
                     .background(
                         Capsule().fill(
                             model.assistantToolsEnabled
@@ -301,10 +322,12 @@ private struct AssistantPane: View {
                             .font(.system(size: 10, weight: .bold))
                         Text(model.assistantAccess.title)
                             .font(.system(size: 11.5, weight: .semibold))
+                            .lineLimit(1)
                     }
                     .foregroundStyle(Aurora.warning)
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, 9)
                     .frame(height: 28)
+                    .fixedSize(horizontal: true, vertical: false)
                     .glassPill()
                 }
 
@@ -339,10 +362,11 @@ private struct AssistantPane: View {
                         Text(hasKey ? (model.assistantKey?.name ?? "Key") : "选 Key")
                             .font(.system(size: 11.5, weight: .semibold))
                             .lineLimit(1)
-                            .frame(maxWidth: 74, alignment: .leading)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: 88, alignment: .leading)
                     }
                     .foregroundStyle(hasKey ? Aurora.teal : Aurora.rose)
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, 9)
                     .frame(height: 28)
                     .glassPill()
                 }
@@ -359,16 +383,20 @@ private struct AssistantPane: View {
                             Text("跟随模型")
                         }
                     }
-                    if !model.assistantModels.isEmpty {
-                        Divider()
-                        ForEach(model.assistantModels, id: \.self) { name in
-                            Button {
-                                model.assistantModel = name
-                            } label: {
-                                if model.assistantModel == name {
-                                    Label(name, systemImage: "checkmark")
-                                } else {
-                                    Text(name)
+                    // 按供应商分组。原来只有一串 `deepseek-v4.1-flash` 这样的裸 id，
+                    // 同一个模型名在不同供应商下都有，根本分不清点的是谁家的。
+                    if model.agentModelsByProvider.isEmpty {
+                        if !model.assistantModels.isEmpty {
+                            Divider()
+                            ForEach(model.assistantModels, id: \.self) { name in
+                                modelChoice(name)
+                            }
+                        }
+                    } else {
+                        ForEach(model.agentProviders, id: \.self) { provider in
+                            Section(provider) {
+                                ForEach(model.agentModels(for: provider), id: \.self) { name in
+                                    modelChoice(name)
                                 }
                             }
                         }
@@ -415,9 +443,13 @@ private struct AssistantPane: View {
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: AuroraMetrics.cardRadius, style: .continuous)
-                .fill(Aurora.surface.opacity(look.islandAlpha))
+                // 底板用实白：半透明会让下面那层阴影透出来，看着像脏
+                .fill(Aurora.surface)
+                // 阴影挂在这块形状上，而不是整个容器 ——
+                // 挂在容器上时，容器里每个胶囊（工具/权限/Key）都会各自投一圈淡影，
+                // 就是「胶囊四周有暗角」的来源。
+                .shadow(color: Color.black.opacity(0.08), radius: 18, x: 0, y: 8)
         )
-        .shadow(color: Color.black.opacity(0.08), radius: 18, x: 0, y: 8)
         .photosPicker(isPresented: $showPhotoPicker, selection: $photoItem, matching: .images, photoLibrary: .shared())
         .onChange(of: photoItem) { item in
             guard let item else { return }
