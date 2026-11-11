@@ -228,7 +228,10 @@ struct PanelAPI {
         // 这个值管的是「两段数据之间最多等多久」。
         // 给太长等于让用户对着思考态干等，给太短又会掐掉慢模型，45 秒是个平衡点。
         request.timeoutInterval = min(timeout, 45)
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        // 必须显式要 event-stream：面板自己的前端就是这么发的。
+        // 发 `application/json` 时，服务端会走「先攒完整段再回」的分支 ——
+        // 看起来就是「先卡半天，然后一次性全出来」，长回答还会撞上超时。
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(token, forHTTPHeaderField: "x-panel-token")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
