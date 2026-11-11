@@ -92,7 +92,12 @@ enum PanelAPIError: LocalizedError {
         case .cannotConnectToHost:
             return .transport("端口没有响应", "面板可能没运行，或者只监听了 127.0.0.1 —— 这种情况下手机从任何网络都连不上，需要按「接入指引」把端口暴露出来。")
         case .timedOut:
-            return .transport("连接超时", "电脑在睡眠、Tailscale 掉线，或者防火墙挡住了端口。")
+            // 这个码既可能是"连不上"，也可能是"连上了但上游一直不出内容"。
+            // 两种都写成同一句会误导人，所以按最常见的两种情况给建议。
+            return .transport(
+                "超时：对方没有在限定时间内返回内容",
+                "如果其他页面正常，说明是这一轮模型排队/思考太久 —— 换一个模型，或把输入框的「工具」关掉再问。"
+            )
         case .networkConnectionLost:
             return .transport("连接被中断", "网络切换（Wi-Fi ↔ 蜂窝）导致，重试一次即可。")
         case .notConnectedToInternet:
@@ -137,6 +142,23 @@ struct PanelAPI {
         // 默认每域名只给 6 条连接。仪表盘一次要并发 9 个接口，
         // 多出来的那些只能排在队尾，排在后面的会一直等到超时 —— 看着就是「连接失败」。
         config.httpMaximumConnectionsPerHost = 10
+        return URLSession(configuration: config)
+    }()
+
+    /// 流式聊天专用 session。
+    ///
+    /// 共享 session 的 `timeoutIntervalForResource` 是 20 秒 —— 那对普通接口够用，
+    /// 但对"边说边出字"的对话来说是灾难：回答说到一半、或者上游思考超过 20 秒，
+    /// 整条连接会被直接掐断，用户看到的就是「有时候不回 / 回一半没了」。
+    private static let streamSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        // 首字节 / 两段文字之间的最长空档
+        config.timeoutIntervalForRequest = 45
+        // 整段回答最多 10 分钟
+        config.timeoutIntervalForResource = 600
+        config.waitsForConnectivity = false
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        config.httpAdditionalHeaders = ["Accept": "application/json"]
         return URLSession(configuration: config)
     }()
 
@@ -203,7 +225,9 @@ struct PanelAPI {
         guard let url = url(for: path) else { throw PanelAPIError.notConfigured }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = timeout
+        // 这个值管的是「两段数据之间最多等多久」。
+        // 给太长等于让用户对着思考态干等，给太短又会掐掉慢模型，45 秒是个平衡点。
+        request.timeoutInterval = min(timeout, 45)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(token, forHTTPHeaderField: "x-panel-token")
@@ -214,7 +238,7 @@ struct PanelAPI {
         }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body, options: [])
 
-        let (bytes, response) = try await Self.session.bytes(for: request)
+        let (bytes, response) = try await Self.streamSession.bytes(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             var raw = Data()
             for try await byte in bytes {
@@ -236,6 +260,26 @@ struct PanelAPI {
             onToolCalls(calls)
         }
 
+        // 有的网关不吃 `stream:true`，直接回一整个 JSON。
+        // 以前不管三七二十一按行读：对方不关连接就一直挂着，
+        // 用户对着省略号等到 60 秒超时 —— 这就是「有时候做不到及时回复」的来源。
+        let contentType = ((response as? HTTPURLResponse)?
+            .value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
+        if !contentType.contains("text/event-stream") {
+            var raw = Data()
+            for try await byte in bytes { raw.append(byte) }
+            guard let json = try? JSONValue.decode(raw) else {
+                throw PanelAPIError.transport(
+                    "上游返回的内容不是 JSON",
+                    "把输入框的「工具」关掉再问一次，或换一个模型试试。"
+                )
+            }
+            if let piece = Self.deltaText(in: json), !piece.isEmpty { onText(piece) }
+            Self.mergeToolCalls(in: json, into: &toolCalls)
+            flushTools()
+            return
+        }
+
         for try await line in bytes.lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             guard !trimmed.isEmpty else { continue }
@@ -252,6 +296,9 @@ struct PanelAPI {
             if PanelAPI.mergeToolCalls(in: json, into: &toolCalls) {
                 flushTools()
             }
+            // 有的实现发完 finish_reason 不关连接（也没有 [DONE]），
+            // 那就自己收尾，别让界面一直停在"正在回答"。
+            if Self.isFinished(json) { break }
         }
         flushTools()
     }
@@ -302,6 +349,16 @@ struct PanelAPI {
             call.id = "call_\(index)"
         }
         calls[index] = call
+    }
+
+    /// 这一帧是否已经声明结束（`choices[0].finish_reason` 非空）。
+    static func isFinished(_ value: JSONValue) -> Bool {
+        if let choices = value.value("choices")?.arrayValue, let first = choices.first {
+            if let reason = first.firstString(["finish_reason"]), !reason.isEmpty { return true }
+            if first.value("finish_reason")?.stringValue != nil { return true }
+        }
+        if let type = value.firstString(["type"]), type == "done" || type == "end" { return true }
+        return false
     }
 
     /// 从任意结构的事件里挑出第一段文本增量。

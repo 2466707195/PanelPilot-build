@@ -204,7 +204,14 @@ private struct AssistantPane: View {
                 } else {
                     // 助手回来的是一整段 Markdown：代码块、标题、列表都要排开，
                     // 直接把原文塞进 Text 会看到「```bash」这种裸符号。
-                    MessageMarkdown(text: message.text.isEmpty ? "…" : message.text)
+                    Group {
+                        if message.text.isEmpty {
+                            // 空内容时不要只显示一个「…」：用户分不清是"在想"还是"死了"。
+                            ThinkingRow(startedAt: model.replyStartedAt ?? message.at)
+                        } else {
+                            MessageMarkdown(text: message.text)
+                        }
+                    }
                         .padding(.horizontal, 13)
                         .padding(.vertical, 11)
                         .background(
@@ -569,5 +576,49 @@ private struct AssistantPane: View {
 extension View {
     func glassPill() -> some View {
         background(Capsule().fill(Aurora.surfaceVariant))
+    }
+}
+
+// MARK: - 思考态
+
+/// 等待首个字时的占位：三个点呼吸 + 已等秒数。
+///
+/// 只写一个「…」等于没反馈 —— 用户分不清是在思考、还是在等一个死掉的请求。
+/// 超过 3 秒就把秒数显示出来，超过 20 秒再补一句「上游有点慢」。
+private struct ThinkingRow: View {
+
+    let startedAt: Date
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let seconds = max(0, Int(context.date.timeIntervalSince(startedAt)))
+            HStack(spacing: 7) {
+                HStack(spacing: 3) {
+                    ForEach(0..<3, id: \.self) { index in
+                        Circle()
+                            .fill(Aurora.muted.opacity(0.55))
+                            .frame(width: 5, height: 5)
+                            .scaleEffect(dotScale(index: index, seconds: seconds))
+                    }
+                }
+                Text(text(seconds))
+                    .font(.system(size: 12))
+                    .foregroundStyle(Aurora.muted)
+                    .monospacedDigit()
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func dotScale(index: Int, seconds: Int) -> CGFloat {
+        // 用一个每秒推进的相位做呼吸，不需要额外动画
+        let phase = Double(seconds % 3)
+        return abs(phase - Double(index)) < 0.5 ? 1.15 : 0.85
+    }
+
+    private func text(_ seconds: Int) -> String {
+        if seconds < 3 { return "正在思考…" }
+        if seconds < 20 { return "正在思考… \(seconds)s" }
+        return "\(seconds)s · 上游有点慢，可以点右下角停止"
     }
 }

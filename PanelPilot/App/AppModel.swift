@@ -188,6 +188,12 @@ final class AppModel: ObservableObject {
     }
     @Published var attachments: [ChatAttachment] = []
     @Published var assistantAccess: AssistantAccess = .full
+    /// 这一轮回答从什么时候开始等（界面用来显示「正在思考 · 12s」）
+    @Published private(set) var replyStartedAt: Date?
+    /// 流式文字的累积缓冲：模型一秒可能吐几十段，
+    /// 每段都发一次 `@Published` 会让界面明显滞后（字到了、屏上还没动）
+    private var deltaBuffer = ""
+    private var deltaFlushTask: Task<Void, Never>?
     // MARK: - 签到中心
 
     /// `GET /api/checkin-center` 的解析结果
@@ -1681,6 +1687,7 @@ final class AppModel: ObservableObject {
         let answerID = UUID()
         chat.append(ChatMessage(id: answerID, role: .assistant, text: ""))
         isReplying = true
+        replyStartedAt = Date()
         attachments = []
         // 新对话第一次发送时分配一个会话 id，用于回写历史
         if activeSessionID == nil { activeSessionID = UUID().uuidString }
@@ -1728,10 +1735,12 @@ final class AppModel: ObservableObject {
                 try await api.streamChat(
                     "/api/assistant/chat",
                     body: body,
-                    timeout: 60,
+                    // 带工具时网关若不支持 tools，常常是「接受请求然后不吐字」，
+                    // 等满 45 秒才降级太亏；22 秒没动静就退回纯文本重试。
+                    timeout: withTools ? 22 : 45,
                     onText: { piece in
                         Task { @MainActor [weak self] in
-                            self?.appendAssistant(piece, to: answerID)
+                            self?.enqueueAssistant(piece, to: answerID)
                         }
                     },
                     onToolCalls: { calls in
@@ -1901,7 +1910,9 @@ final class AppModel: ObservableObject {
     }
 
     private func finishReply(_ id: UUID, error: Error?) {
+        flushDeltas(to: id)
         isReplying = false
+        replyStartedAt = nil
         guard let index = chat.firstIndex(where: { $0.id == id }) else { return }
         if let error {
             let apiError = error as? PanelAPIError
@@ -1921,9 +1932,42 @@ final class AppModel: ObservableObject {
         chat[index].text += piece
     }
 
+    /// 把流式片段先攒起来，最多 45ms 刷一次。
+    ///
+    /// 原来的写法是「每段文字都 `Task { @MainActor in ... }` 改一次 chat」：
+    /// 模型吐得快的时候一秒能创建几十个 Task、触发几十次界面刷新，
+    /// 表现为「字早就到了，屏幕上要慢半拍才滚出来」。
+    private func enqueueAssistant(_ piece: String, to id: UUID) {
+        deltaBuffer += piece
+        guard deltaFlushTask == nil else { return }
+        deltaFlushTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 45_000_000)
+            guard let self else { return }
+            self.flushDeltas(to: id)
+        }
+    }
+
+    private func flushDeltas(to id: UUID) {
+        deltaFlushTask?.cancel()
+        deltaFlushTask = nil
+        let chunk = deltaBuffer
+        deltaBuffer = ""
+        guard !chunk.isEmpty else { return }
+        appendAssistant(chunk, to: id)
+    }
+
     func stopChat() {
         chatTask?.cancel()
+        if let last = chat.last(where: { $0.role == .assistant }) {
+            flushDeltas(to: last.id)
+        }
         isReplying = false
+        replyStartedAt = nil
+        // 停在半路的空气泡要留一句「已停止」，
+        // 否则它会一直显示思考态（模型那条消息永远收不到收尾回调）
+        if let index = chat.lastIndex(where: { $0.role == .assistant }), chat[index].text.isEmpty {
+            chat[index].text = "（已停止）"
+        }
     }
 
     // MARK: - 本地自检（不发任何一个请求）
