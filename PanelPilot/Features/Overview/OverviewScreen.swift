@@ -205,6 +205,17 @@ struct OverviewScreen: View {
                     .font(.system(size: 13, design: .monospaced))
                     .foregroundStyle(Aurora.inkSoft)
                     .lineLimit(1)
+
+                // 失败时把「到底怎么失败的」直接摆出来：
+                // 只写「连接失败」等于没说，用户没法把原因告诉别人。
+                if case .failed(let reason) = model.state, !reason.isEmpty {
+                    Text(reason)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Aurora.rose)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 2)
+                }
             }
 
             HStack(spacing: 0) {
