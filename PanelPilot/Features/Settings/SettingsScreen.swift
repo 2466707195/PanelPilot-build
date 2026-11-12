@@ -698,7 +698,15 @@ private struct ActionSettings: View {
                     Task { await model.checkinAll() }
                 }
                 MonoButton(text: "刷新模型", icon: "cpu", style: .tonal) {
-                    Task { await model.runCommand("刷新模型", path: "/api/models/refresh") }
+                    Task {
+                        // 两件事，缺一不可：
+                        //   ① `/api/models/refresh` 让**面板**重新去各家拉一遍清单；
+                        //   ② 再拉一次 `/api/models/manage`，否则手机上那份
+                        //      「供应商 → 模型」还是旧的，Agent 配置页看不出任何变化。
+                        await model.runCommand("刷新模型", path: "/api/models/refresh")
+                        await model.loadAgentModelCatalog(force: true)
+                        await model.loadAssistantModels(force: true)
+                    }
                 }
                 MonoButton(text: "清空粘性", icon: "pin.slash", style: .danger) {
                     confirmSticky = true

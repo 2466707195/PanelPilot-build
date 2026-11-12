@@ -88,11 +88,13 @@ struct StudioChip: View {
                     .font(.system(size: 12.5, weight: active ? .semibold : .regular))
                     .lineLimit(1)
             }
-            .foregroundStyle(active ? Aurora.ink : Aurora.inkSoft)
+            // 选中态必须**看得见**：之前是「白底 + 近黑字」，而卡片本身也是白的 ——
+            // 选中的 chip 等于隐形，用户会以为一个都没选（供应商列表尤其明显）。
+            .foregroundStyle(active ? Color.white : Aurora.inkSoft)
             .padding(.horizontal, 14)
             .frame(height: 32)
             .background(
-                Capsule().fill(active ? Aurora.surface : Aurora.surfaceVariant)
+                Capsule().fill(active ? Aurora.brand : Aurora.surfaceVariant)
             )
         }
         .buttonStyle(.plain)

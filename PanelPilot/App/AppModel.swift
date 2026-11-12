@@ -183,7 +183,15 @@ final class AppModel: ObservableObject {
     /// Agent 配置用：提供商 → 该提供商下全部模型
     @Published var agentProviders: [String] = []
     @Published var agentModelsByProvider: [String: [String]] = [:]
+    /// 提供商 id → 面板给的可读名字（`providerLabel`）。没有就退回 id 本身。
+    @Published var agentProviderLabels: [String: String] = [:]
     @Published var agentModelsLoading = false
+    /// 上一次成功拉取模型目录的时间。
+    ///
+    /// 之前这一页只要拉到过一次就**再也不刷新**（`if !agentModelsByProvider.isEmpty { return }`），
+    /// 于是服务端新加的供应商在手机上永远看不到，必须杀掉 App 重开。
+    /// 现在按 TTL 自动过期，见 `loadAgentModelCatalog`。
+    private var agentModelsFetchedAt: Date?
     /// 是否把工具声明给模型（默认关：很多网关/模型对 `tools` 支持不完整，
     /// 开着会让请求一直挂着不返回。需要「调用工具中」那种卡片时再打开。）
     @Published var assistantToolsEnabled: Bool =

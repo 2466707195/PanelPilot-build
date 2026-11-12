@@ -300,8 +300,12 @@ extension AppModel {
 extension AppModel {
 
     /// 可用模型清单（给输入框的模型选择器用）。
-    func loadAssistantModels() async {
-        guard assistantModels.isEmpty, activeProfile?.isValid == true else { return }
+    ///
+    /// `force` 用于「设置 → 操作 → 刷新模型」：那份清单同样会被服务端的启用/停用改掉，
+    /// 不带 force 的话第二次以后直接 return，永远看不到新增的模型。
+    func loadAssistantModels(force: Bool = false) async {
+        guard activeProfile?.isValid == true else { return }
+        if !force, !assistantModels.isEmpty { return }
         do {
             let response = try await authenticatedRequest("GET", "/api/models/manage", timeout: 25)
             let node = response.json.obj("data") ?? response.json
@@ -531,25 +535,64 @@ enum AgentPresetCatalog {
 extension AppModel {
 
     /// 把 `/api/models/manage` 按提供商分组，供「Agent 配置」直接选。
+    /// 拉「提供商 → 模型」目录（`GET /api/models/manage`）。
+    ///
+    /// 两条规矩都是被「服务端加了供应商、手机上就是看不到」逼出来的：
+    ///
+    ///   1. **60 秒 TTL**。以前只要拉到过一次就永远不再拉
+    ///      （`if !agentModelsByProvider.isEmpty { return }`），
+    ///      新加的供应商必须杀掉 App 重开才会出现。
+    ///   2. **以面板的 `providers` 数组为准**。只按 `models` 里的 `provider`
+    ///      分组会漏掉「供应商已经在、模型还没启用」的那些；而且面板自己的
+    ///      下拉框读的就是 `providers`，两边应该长得一模一样。
     func loadAgentModelCatalog(force: Bool = false) async {
         guard activeProfile?.isValid == true else { return }
         if agentModelsLoading { return }
-        if !force, !agentModelsByProvider.isEmpty { return }
+        if !force,
+           !agentModelsByProvider.isEmpty,
+           let fetched = agentModelsFetchedAt,
+           Date().timeIntervalSince(fetched) < 60 {
+            return
+        }
 
         agentModelsLoading = true
         do {
             let response = try await authenticatedRequest("GET", "/api/models/manage", timeout: 40)
+
+            // models：只收「启用中、且不是图片模型」的，跟面板前端同一个过滤条件
             var grouped: [String: [String]] = [:]
             for row in JSONRows.from(response.json) {
                 guard let id = row.firstString(["id", "model", "name"]) else { continue }
+                if row.bool("enabled") == false { continue }
+                if let kind = row.firstString(["kind"]), kind == "image" { continue }
                 let provider = row.firstString(["provider", "providerId"]) ?? "全部"
                 grouped[provider, default: []].append(id)
             }
             for key in grouped.keys {
                 grouped[key] = Array(Set(grouped[key] ?? [])).sorted()
             }
+
+            // providers：面板自己的清单，带 providerLabel 和 count；顺序也照它来
+            var order: [String] = []
+            var labels: [String: String] = [:]
+            for item in response.json.value("providers")?.arrayValue ?? [] {
+                guard let pid = item.firstString(["provider", "id"]) else { continue }
+                let count = item.int("count") ?? 0
+                if count <= 0, (grouped[pid]?.isEmpty ?? true) { continue }
+                order.append(pid)
+                if let label = item.firstString(["providerLabel", "label"]), !label.isEmpty {
+                    labels[pid] = label
+                }
+            }
+
+            let ordered = order.isEmpty ? grouped.keys.sorted() : order
+            // 兜底：`providers` 里没有、但 `models` 里出现的，也别丢
+            let leftovers = grouped.keys.filter { !ordered.contains($0) }.sorted()
+
             agentModelsByProvider = grouped
-            agentProviders = grouped.keys.sorted()
+            agentProviderLabels = labels
+            agentProviders = ordered + leftovers
+            agentModelsFetchedAt = Date()
             noteLocalCompute()
         } catch {
             // 拿不到就退回助手模型列表，不挡用户
@@ -561,10 +604,20 @@ extension AppModel {
         agentModelsLoading = false
     }
 
-    /// 当前选中的提供商下所有模型
+    /// 当前选中的提供商下所有模型。
+    ///
+    /// 选中一个**没有启用模型**的供应商时返回空数组，绝不偷偷换成助手模型 ——
+    /// 那样用户会以为「这个供应商下就是这几个模型」，导出的配置也全是错的。
+    /// （`provider` 为空才走助手模型，那是还没选任何供应商的初始态。）
     func agentModels(for provider: String) -> [String] {
         if provider.isEmpty { return assistantModels }
-        return agentModelsByProvider[provider] ?? assistantModels
+        return agentModelsByProvider[provider] ?? []
+    }
+
+    /// 供应商的可读名（面板给了 `providerLabel` 就用它，否则用 id）
+    func agentProviderTitle(_ provider: String) -> String {
+        let label = agentProviderLabels[provider] ?? ""
+        return label.isEmpty ? provider : label
     }
 
     /// 接入用的默认 baseURL：面板地址 + `/v1`（已经是 /v1 就不重复加）。

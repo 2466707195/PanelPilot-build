@@ -65,29 +65,44 @@ struct AgentConfigPane: View {
         SectionCard {
             SectionTitle(
                 title: "供应商",
-                trailing: model.agentModelsLoading ? "读取中…" : "共 \(providerModels.count) 个模型"
+                trailing: model.agentModelsLoading
+                    ? "读取中…"
+                    : "\(model.agentProviders.count) 个供应商 · \(providerModels.count) 个模型"
             )
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
+            // 换行网格，不是横向滚动。
+            //
+            // 之前是 `ScrollView(.horizontal)`：供应商一多，后面的就被卡片边缘裁掉、
+            // 又没有任何滚动提示，看起来就像「新加的供应商没同步」。实际上它就在
+            // 屏幕右边外面 —— 面板按名字排序，`workbuddy` 正好排在最后，永远看不见。
+            if model.agentProviders.isEmpty {
+                Text(model.agentModelsLoading ? "正在读取供应商…" : "还没读到供应商，点下面的「刷新模型」。")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Aurora.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 10)
+            } else {
+                WrapLayout(spacing: 8, lineSpacing: 8) {
                     ForEach(model.agentProviders, id: \.self) { item in
-                        StudioChip(text: item, active: provider == item) {
+                        StudioChip(
+                            text: model.agentProviderTitle(item),
+                            active: provider == item
+                        ) {
                             provider = item
                             modelName = model.agentModels(for: item).first ?? ""
                             model.haptic()
                         }
                     }
                 }
-                .padding(.vertical, 2)
+                .padding(.top, 10)
             }
-            .padding(.top, 8)
 
             if providerModels.isEmpty {
-                Text("还没读到这个提供商的模型，点右上角刷新；也可以直接在下面手填模型名。")
+                Text("这个供应商下还没有启用的模型：去面板的「模型」里打开，再点刷新；也可以直接在下面手填模型名。")
                     .font(.system(size: 11.5))
                     .foregroundStyle(Aurora.muted)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 8)
+                    .padding(.top, 10)
             } else {
                 Text("生成配置时会把这 \(providerModels.count) 个模型一起写进去，客户端里可以直接切换。")
                     .font(.system(size: 11.5))
@@ -95,6 +110,8 @@ struct AgentConfigPane: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 8)
 
+                // 模型名是等宽英文，横向滚动这里没问题：它本来就是「长列表」的语义，
+                // 而且最多 12 个，能看到「还有 N 个」的提示。
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         ForEach(providerModels.prefix(12), id: \.self) { name in
@@ -119,12 +136,31 @@ struct AgentConfigPane: View {
 
             HStack(spacing: 8) {
                 MonoButton(text: "刷新模型", icon: "arrow.clockwise", style: .outline) {
-                    Task { await model.loadAgentModelCatalog(force: true) }
+                    Task { await reloadProviders() }
                 }
                 Spacer(minLength: 0)
             }
             .padding(.top, 10)
         }
+    }
+
+    /// 强制重拉目录，并把「选中项」修正到还存在的供应商 / 模型上。
+    ///
+    /// 只拉不修是之前的一个坑：服务端删了一个供应商，手机上还停在它上面，
+    /// 于是模型列表空着、导出配置里写着不存在的模型。
+    private func reloadProviders() async {
+        await model.loadAgentModelCatalog(force: true)
+        if provider.isEmpty || !model.agentProviders.contains(provider) {
+            provider = model.agentProviders.first ?? ""
+        }
+        if !providerModels.contains(modelName) {
+            modelName = providerModels.first ?? ""
+        }
+        model.haptic()
+        model.toast = Toast(
+            text: "已同步 \(model.agentProviders.count) 个供应商 · \(providerModels.count) 个模型",
+            kind: model.agentProviders.isEmpty ? .warning : .success
+        )
     }
 
     private func prepare() async {
@@ -136,10 +172,11 @@ struct AgentConfigPane: View {
             apiKey = model.assistantKeyValue
             keyHint = nil
         }
-        if provider.isEmpty, let first = model.agentProviders.first {
-            provider = first
+        if provider.isEmpty
+            || !model.agentProviders.contains(provider) {
+            provider = model.agentProviders.first ?? ""
         }
-        if modelName.isEmpty {
+        if modelName.isEmpty || !providerModels.contains(modelName) {
             modelName = providerModels.first ?? model.assistantModels.first ?? ""
         }
         if baseURL.isEmpty { baseURL = model.defaultBaseURL }

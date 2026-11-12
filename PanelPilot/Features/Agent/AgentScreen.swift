@@ -401,7 +401,7 @@ private struct AssistantPane: View {
                         }
                     } else {
                         ForEach(model.agentProviders, id: \.self) { provider in
-                            Section(provider) {
+                            Section(model.agentProviderTitle(provider)) {
                                 ForEach(model.agentModels(for: provider), id: \.self) { name in
                                     modelChoice(name)
                                 }
