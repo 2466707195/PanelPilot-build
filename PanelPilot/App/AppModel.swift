@@ -191,7 +191,9 @@ final class AppModel: ObservableObject {
     /// 之前这一页只要拉到过一次就**再也不刷新**（`if !agentModelsByProvider.isEmpty { return }`），
     /// 于是服务端新加的供应商在手机上永远看不到，必须杀掉 App 重开。
     /// 现在按 TTL 自动过期，见 `loadAgentModelCatalog`。
-    private var agentModelsFetchedAt: Date?
+    /// 注意：不能用 `private` —— 写入它的代码在 `AppModel+Studio.swift`，
+    /// 那是另一个文件里的扩展，`private` 跨文件不可见（会直接编译失败）。
+    var agentModelsFetchedAt: Date?
     /// 是否把工具声明给模型（默认关：很多网关/模型对 `tools` 支持不完整，
     /// 开着会让请求一直挂着不返回。需要「调用工具中」那种卡片时再打开。）
     @Published var assistantToolsEnabled: Bool =
