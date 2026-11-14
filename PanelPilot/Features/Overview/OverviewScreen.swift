@@ -66,7 +66,10 @@ struct OverviewScreen: View {
                     }
                 }
 
-                ScrollView {
+                // 显式 `.vertical`：竖向滚动只该管上下。
+                // 内容一旦有个「不可压缩的最小宽度」超过屏幕，SwiftUI 会把它居中摆、
+                // 左右各溢出一截 —— 那正是「点 30 天整页被放大」的样子。
+                ScrollView(.vertical) {
                     VStack(alignment: .leading, spacing: AuroraMetrics.cardSpacing) {
                         hero
                         if model.needsLogin { loginCard }
@@ -86,6 +89,9 @@ struct OverviewScreen: View {
                     // 万一某个子视图算出来的宽度超了，也不要让它把整页撑宽
                     .clipped()
                 }
+                // 兜底：滚动容器本身也裁一刀。内容比屏幕宽时，溢出的是这一层，
+                // 不加的话左右两侧会各露出一截被切掉的内容。
+                .clipped()
                 .scrollIndicators(.hidden)
                 .refreshable { await model.refreshAll() }
             }
@@ -203,6 +209,9 @@ struct OverviewScreen: View {
                 }
             }
 
+            // 三段等分 + 可选分隔线：内容宽度由「文字本身」决定，
+            // 所以每一格都要能压缩（minimumScaleFactor），否则「2.1 亿」这种
+            // 宽数字会把整行顶宽，顶卡再顶着整页一起变宽。
             HStack(spacing: 0) {
                 heroStat("请求", model.displayNumber(stats.requests), rangeTitle)
                 heroDivider
@@ -214,6 +223,7 @@ struct OverviewScreen: View {
                     "毫秒 · 网关"
                 )
             }
+            .frame(maxWidth: .infinity)
         }
         .padding(16)
         .background(
@@ -684,6 +694,10 @@ struct OverviewScreen: View {
                     .font(.system(size: 9.5))
                     .foregroundStyle(Aurora.muted)
                     .monospacedDigit()
+                    // 允许换行：这行有三组数字，窄机上单行放不下，
+                    // 不给它换行能力它就会把宽度顶出去。
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             }
         }

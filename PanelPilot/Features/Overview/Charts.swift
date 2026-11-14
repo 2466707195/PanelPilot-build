@@ -92,12 +92,6 @@ struct AuroraBarChart: View {
         (0...3).map { $0 * scale.step }
     }
 
-    private var labelStep: Int {
-        let count = points.count
-        if count <= 8 { return 1 }
-        return Int(ceil(Double(count) / 6.0))
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             // 轴名 + 单位：放在纵轴正上方，一眼知道这排数字是什么
@@ -117,8 +111,13 @@ struct AuroraBarChart: View {
 
                     axis
                 }
+                // 柱子多时（30 天）这里是最后一个可能撑宽的地方
+                .frame(maxWidth: .infinity)
+                .clipped()
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .clipped()
     }
 
     private var axisWidth: CGFloat { 34 }
@@ -158,8 +157,15 @@ struct AuroraBarChart: View {
 
     // MARK: 柱子
 
+    /// 柱子间距随数量收紧：30 根时 5pt 的间隙光「缝」就要 145pt
+    private var barSpacing: CGFloat {
+        if points.count > 24 { return 2 }
+        if points.count > 14 { return 3 }
+        return 5
+    }
+
     private var bars: some View {
-        HStack(alignment: .bottom, spacing: 5) {
+        HStack(alignment: .bottom, spacing: barSpacing) {
             ForEach(Array(points.enumerated()), id: \.element.id) { index, point in
                 let value = metric.value(of: point)
                 let ratio = CGFloat(value) / CGFloat(scale.max)
@@ -181,7 +187,9 @@ struct AuroraBarChart: View {
                             Text(metric.format(value))
                                 .font(.system(size: 9.5, weight: .bold, design: .rounded))
                                 .foregroundStyle(Aurora.brand)
-                                .fixedSize()
+                                .lineLimit(1)
+                                // 不要 fixedSize：柱子多时它会把那一格的最小宽度顶起来
+                                .minimumScaleFactor(0.7)
                                 .transition(.opacity)
                         }
 
@@ -202,23 +210,59 @@ struct AuroraBarChart: View {
     }
 
     // MARK: 横轴
+    //
+    // ⚠️ 这里曾经是「整个面板被放大」的元凶。
+    //
+    // 每个日期标签都 `.fixedSize()` —— 它把「文字本身有多宽」变成**不可压缩的最小宽度**。
+    // 30 天时（iPhone 14 Pro Max，内容宽度 326pt）：
+    //     30 个格子 × 5pt 间距  = 145pt
+    //   +  7 个可见标签 × 24pt = 168pt
+    //   + 23 个占位空格 × 2.5  =  58pt
+    //   = 371pt  >  326pt
+    // 这一层宽出 45pt，父级 `.frame(maxWidth: .infinity)` 又把它居中摆，
+    // 于是**左右各溢出 22pt**：标题「概览」左边被切、右边的「近 30 天」也被切，
+    // 看起来就是整页被放大了一档、还能横向拖动。
+    //
+    // 现在：标签不再 fixedSize（可压缩 + 自动缩字号），间距按点数收紧，
+    // 再给整条横轴和图表本体各加一层 clipped 兜底。最小宽度回到接近 0。
+
+    private var axisSpacing: CGFloat {
+        if points.count > 24 { return 1 }
+        if points.count > 14 { return 2 }
+        return 5
+    }
 
     private var axis: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: axisSpacing) {
             ForEach(Array(points.enumerated()), id: \.element.id) { index, point in
-                Text(shouldShowLabel(index) ? point.label : " ")
+                Text(shouldShowLabel(index) ? axisLabel(point.label) : "")
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(selected == index ? Aurora.brand : Aurora.muted)
                     .lineLimit(1)
-                    .fixedSize()
+                    // 宁可把字缩到 65%，也不要它去撑宽整张卡片
+                    .minimumScaleFactor(0.65)
                     .frame(maxWidth: .infinity)
             }
         }
+        .clipped()
     }
 
+    /// 点位多的时候只留「日」，`11-05` → `05`。
+    /// 30 天时一格的宽度不到 10pt，五字符日期必然被缩到看不清 —— 不如只留日。
+    private func axisLabel(_ label: String) -> String {
+        guard points.count > 12 else { return label }
+        if let dash = label.lastIndex(where: { $0 == "-" || $0 == "/" }) {
+            return String(label[label.index(after: dash)...])
+        }
+        return label
+    }
+
+    /// 标签最多 6 个：再多就挤成一片，而且每多一个都在往卡片的最小宽度上加钱
     private func shouldShowLabel(_ index: Int) -> Bool {
-        if points.count <= 8 { return true }
-        return index % labelStep == 0 || index == points.count - 1
+        let count = points.count
+        if count <= 8 { return true }
+        let step = max(1, Int(ceil(Double(count) / 6.0)))
+        return index % step == 0 || index == count - 1
     }
 }
 
