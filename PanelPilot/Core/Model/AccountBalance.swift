@@ -30,8 +30,13 @@ struct AccountBalance: Identifiable, Equatable {
     var metrics: [BalanceMetric] = []
     var at: Date?
     var error: String?
+    /// 面板给的原因码，例如 `usage_not_configured` / `refresh_token_expired`
+    var code: String?
 
     var hasError: Bool { !(error ?? "").isEmpty }
+
+    /// 网关明确说「这家没有余额查询」，不是失败，别当错误红字显示
+    var notConfigured: Bool { code == "usage_not_configured" }
 
     var atText: String {
         guard let at else { return "还没有查询过" }
@@ -41,7 +46,7 @@ struct AccountBalance: Identifiable, Equatable {
     var tint: Color {
         if hasError { return Aurora.rose }
         if primary.contains("不限") { return Aurora.brand }
-        if primary == "未查询" { return Aurora.muted }
+        if primary == "未查询" || notConfigured { return Aurora.muted }
         return Aurora.ink
     }
 }
@@ -64,24 +69,60 @@ enum AccountBalanceParser {
         return found
     }
 
-    /// 单账号接口：`{usage: {...}}` 或直接就是 usage
+    /// 单账号接口 `GET /api/accounts/usage?id=`
+    ///
+    /// 面板真实返回和快照同一个信封：
+    ///   `{results: [{id, usage: {...}, error, code, at, lastUsage}, …]}`
+    /// 老版本这里只认 `{usage:{…}}`，于是把整个信封当 usage 解析，
+    /// 一个数值都找不到 → primary 停在默认的「未查询」。
+    /// 表现就是：**点了刷新凭证 / 重进详情页，余额还是一直「未查询」**。
     static func single(_ json: JSONValue, id: String) -> AccountBalance {
+        // ① 标准信封
+        if let results = json.arr("results") ?? json.obj("data")?.arr("results") {
+            let node = results.first { item in
+                item.firstString(["id", "accountId", "account"]) == id
+            } ?? (results.count == 1 ? results[0] : nil)
+            if let node { return parseResultItem(id: id, node: node) }
+        }
+        // ② 老式 `{usage:{…}}`
         if let usage = json.obj("usage") {
             return parse(id: id, node: .object(["id": .string(id), "usage": usage]))
         }
+        // ③ `{data:{…}}`
+        if let data = json.obj("data") { return single(data, id: id) }
+        // ④ 直接就是 usage
         return parse(id: id, node: json)
+    }
+
+    /// 解 `results[]` 里的一个账号。
+    ///
+    /// 这次查询失败但网关带了 `lastUsage` 时，显示上一次的数字并标注来源 ——
+    /// 比直接甩一个「查询失败」有用得多（上游偶发 5xx 时尤其明显）。
+    private static func parseResultItem(id: String, node: JSONValue) -> AccountBalance {
+        let parsed = parse(id: id, node: node)
+        guard parsed.primary == "未查询",
+              let last = node.obj("lastUsage") ?? node.obj("last_usage") else { return parsed }
+        var older = parse(id: id, node: .object(["id": .string(id), "usage": last]))
+        guard older.primary != "未查询" else { return parsed }
+        older.error = parsed.error
+        older.code = parsed.code
+        older.at = date(node.firstString(["lastSuccessAt"])) ?? parsed.at
+        older.secondary = ["上次查询", older.secondary].compactMap { $0 }.joined(separator: " · ")
+        return older
     }
 
     // MARK: 一条
 
     private static func parse(id: String, node: JSONValue) -> AccountBalance {
         var result = AccountBalance(id: id)
-        if let error = node.firstString(["error"]), !error.isEmpty {
-            result.error = error
-        }
+        result.code = node.firstString(["code"])
         result.at = date(node.firstString(["at", "updatedAt", "lastSuccessAt"]))
 
         let usage = node.obj("usage") ?? node
+        // error 有的是字符串，有的是 `{message:…}`；usage 里也可能再带一份
+        if let error = errorText(node) ?? errorText(usage) {
+            result.error = error
+        }
 
         if usage.bool("unlimited") == true {
             result.primary = "不限"
@@ -146,6 +187,9 @@ enum AccountBalanceParser {
             guard metrics.count < 4 else { break }
             let name = item.firstString(["name", "label", "key"]) ?? ""
             guard !name.isEmpty else { continue }
+            // 同一家可能给好几条同名额度（比如 trae 的「签到奖励」有 4 张券），
+            // 只留一条，不然右栏会出现 4 行一样的字
+            guard !metrics.contains(where: { $0.id == name }) else { continue }
             let value = number(item, keys: ["balance", "remaining", "left", "used", "value"])
             let itemUnit = normalizedUnit(item.firstString(["unit"]) ?? unit)
             guard let value else { continue }
@@ -156,10 +200,25 @@ enum AccountBalanceParser {
             )
         }
         result.metrics = metrics
+        // 网关说「这家没配余额查询」：这不是失败，别用红字吓人
+        if result.notConfigured {
+            result.primary = "未配置"
+            result.error = nil
+        }
         return result
     }
 
     // MARK: 工具
+
+    /// `error` 有的是字符串，有的是 `{message:…}` / `{detail:…}`
+    private static func errorText(_ node: JSONValue) -> String? {
+        guard let value = node.value("error") else { return nil }
+        if let text = value.stringValue, !text.isEmpty, text != "null" { return text }
+        if let message = value.firstString(["message", "detail", "error"]), !message.isEmpty {
+            return message
+        }
+        return nil
+    }
 
     private static func walk(_ value: JSONValue, depth: Int, visit: (JSONValue) -> Void) {
         guard depth < 6 else { return }

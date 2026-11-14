@@ -284,6 +284,7 @@ struct AccountsScreen: View {
         }
         guard let parsed = model.balanceByAccount[account.id],
               !parsed.hasError,
+              !parsed.notConfigured,
               !parsed.primary.isEmpty,
               parsed.primary != "未查询" else { return nil }
         return parsed.primary
@@ -318,12 +319,24 @@ struct AccountDetailSheet: View {
             parts.append("账号状态异常（\(live.statusText)）")
         }
         if let proxyText { parts.append("走 \(proxyText)") }
-        if let balance = live.balance, !balance.isEmpty { parts.append("余额 \(balance)") }
+        if let balanceText { parts.append("余额 \(balanceText)") }
         if let expires = live.expiresAt, !expires.isEmpty { parts.append("\(expires) 到期") }
         if let checkin {
             parts.append(checkin.status.signed ? "今天已签到" : "今天还没签")
         }
         return parts.joined(separator: "，") + "。"
+    }
+
+    /// 详情页顶部那句话里的余额：`/api/accounts` 自带的优先，其次用余额快照。
+    private var balanceText: String? {
+        if let balance = live.balance?.trimmingCharacters(in: .whitespaces), !balance.isEmpty {
+            return balance
+        }
+        guard let parsed = model.balanceByAccount[live.id],
+              !parsed.hasError,
+              !parsed.primary.isEmpty,
+              parsed.primary != "未查询" else { return nil }
+        return parsed.primary
     }
 
     /// 代理方式的通俗说法
@@ -343,7 +356,9 @@ struct AccountDetailSheet: View {
         if let balance = live.balance, !balance.isEmpty {
             rows.append(("余额", balance))
         } else if let parsed = model.balanceByAccount[live.id] {
-            rows.append(("余额", parsed.primary + (parsed.secondary.map { "（\($0)）" } ?? "")))
+            rows.append(("余额", balanceRowText(parsed)))
+        } else if model.balanceBusyID == live.id {
+            rows.append(("余额", "查询中…"))
         } else {
             rows.append(("余额", "未查询"))
         }
@@ -359,6 +374,18 @@ struct AccountDetailSheet: View {
             rows.append(("可用模型", "\(live.modelCount) 个"))
         }
         return rows
+    }
+
+    /// 余额这一行：主数值 + 括号补充（拆分/剩余），有错误再跟上原因。
+    private func balanceRowText(_ parsed: AccountBalance) -> String {
+        var text = parsed.primary
+        if let secondary = parsed.secondary?.trimmingCharacters(in: .whitespaces), !secondary.isEmpty {
+            text += "（\(secondary)）"
+        }
+        if parsed.hasError, let error = parsed.error, !error.isEmpty, error != parsed.primary {
+            text += "｜\(error)"
+        }
+        return text
     }
 
     var body: some View {

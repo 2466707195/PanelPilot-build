@@ -212,7 +212,11 @@ extension AppModel {
             if parsed.isEmpty {
                 balanceError = "网关没有返回任何余额数据；可能是这个版本还没有余额查询插件。"
             }
-            balanceByAccount.merge(parsed) { _, new in new }
+            // 快照里有的账号只有 `{id, code}`、没有 usage：别用它把已知的余额擦成「未查询」
+            balanceByAccount.merge(parsed) { old, new in
+                if new.primary == "未查询", !new.hasError, old.primary != "未查询" { return old }
+                return new
+            }
             balancesUpdatedAt = Date()
             noteLocalCompute()
             if !silent {
@@ -251,14 +255,33 @@ extension AppModel {
                 "GET", "/api/accounts/usage?id=\(encoded)", timeout: 60
             )
             let parsed = AccountBalanceParser.single(response.json, id: id)
-            balanceByAccount[id] = parsed
+            let previous = balanceByAccount[id]
+            if parsed.primary == "未查询", !parsed.hasError,
+               let previous, previous.primary != "未查询" {
+                // 网关这一轮没给出可识别的数字：**保住上一次的值**，
+                // 别把好好的余额改写成「未查询」—— 那正是「点刷新反而没了」的观感来源
+                balanceByAccount[id] = previous
+            } else {
+                balanceByAccount[id] = parsed
+            }
             balancesUpdatedAt = Date()
-            if parsed.hasError {
+            if parsed.notConfigured {
+                toast = Toast(text: "这家提供商没有余额查询", kind: .warning)
+            } else if parsed.hasError {
                 toast = Toast(text: parsed.error ?? "上游返回了错误", kind: .warning)
             }
         } catch {
             let apiError = error as? PanelAPIError
-            balanceByAccount[id] = AccountBalance(id: id, primary: "查询失败", error: apiError?.errorDescription ?? error.localizedDescription)
+            if let previous = balanceByAccount[id], previous.primary != "未查询", !previous.hasError {
+                // 网络失败也别把旧数字擦掉
+                balanceByAccount[id] = previous
+            } else {
+                balanceByAccount[id] = AccountBalance(
+                    id: id,
+                    primary: "查询失败",
+                    error: apiError?.errorDescription ?? error.localizedDescription
+                )
+            }
             toast = Toast(text: "查询失败：\(apiError?.errorDescription ?? error.localizedDescription)", kind: .error)
         }
         balanceBusyID = nil
