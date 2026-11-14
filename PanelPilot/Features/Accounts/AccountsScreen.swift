@@ -14,6 +14,7 @@ struct AccountsScreen: View {
     @State private var detail: AccountItem?
     @State private var showAddAccount = false
     @State private var showBalances = false
+    @State private var showCheckin = false
 
     private var visibleProviders: [AccountProvider] {
         guard !providerFilter.isEmpty else { return model.providers }
@@ -89,9 +90,19 @@ struct AccountsScreen: View {
         .sheet(isPresented: $showBalances) {
             BalanceSheet()
         }
+        .fullScreenCover(isPresented: $showCheckin) {
+            // 签到是完整的四栏页面（签到中心 / 定时签到 / 定时补签 / 签到记录），
+            // 用 fullScreen 而不是 sheet：它自己带返回按钮，版式跟设置里的子页一致。
+            CheckinScreen(onBack: { showCheckin = false })
+        }
     }
 
-    /// 右上角三个点：刷新 / 添加账号 / 查询余额 / 全部签到 / 切换服务器
+    /// 右上角三个点：刷新 / 添加账号 / 查询余额 / 签到中心 / 切换服务器
+    ///
+    /// 「全部签到」这个按钮挪走了：它只是签到模块里的一个动作，
+    /// 放在账号页显得像是「给这些账号各点一次」；而且签到还带着定时计划、
+    /// 补签、记录，光有一个按钮等于把模块砍成一个动作。
+    /// 现在这里是**入口**，点进去是完整的签到页（四栏都有）。
     private var accountMenu: some View {
         Menu {
             Button {
@@ -110,8 +121,8 @@ struct AccountsScreen: View {
             } label: { Label("查询余额", systemImage: "creditcard") }
 
             Button {
-                Task { await model.checkinAll() }
-            } label: { Label("全部签到", systemImage: "checkmark.seal") }
+                showCheckin = true
+            } label: { Label("签到中心", systemImage: "checkmark.seal") }
 
             Divider()
 

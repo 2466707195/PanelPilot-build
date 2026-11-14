@@ -6,10 +6,11 @@ import Foundation
 // 一级只放入口，全部走二级页：
 //   通用 / 显示 / 网关 / 安全 / 连接方式 / 服务器 / 关于
 // 每一项都是能落地的东西：要么改本机行为（自动刷新、启动页、触感、图表动画、
-// 数字格式），要么真调面板接口（改密码、隐藏用户名、路由、签到、模型…）。
+// 数字格式），要么真调面板接口（改密码、隐藏用户名、路由、模型…）。
 //
-// 「服务器」这一项保留原来的六个面板页入口（签到 / 模型 / 工具 / 代理 /
-// 网关 Key / 定时任务），换的是组织方式，不是砍功能。
+// 「服务器」这一项保留五个面板页入口（模型 / 工具 / 代理 / 网关 Key / 定时任务）。
+// 签到不在这里：它属于「账号」，入口在账号页右上角的三个点里 —— 同一个功能
+// 有两处入口，用户会不知道点哪个才是「真的」。
 
 struct SettingsScreen: View {
 
@@ -49,12 +50,12 @@ struct SettingsScreen: View {
         var detail: String {
             switch self {
             case .general: return "刷新 · 启动页 · 本地引擎"
-            case .actions: return "自检 · 同步 · 签到 · 模型"
+            case .actions: return "自检 · 同步 · 模型 · 粘滞"
             case .display: return "图表动画 · 数字格式"
             case .gateway: return "版本 · 监听 · 全局路由"
             case .security: return "密码 · 凭证 · 用户名"
             case .connection: return "地址 · 登录 · 诊断"
-            case .server: return "签到 · 模型 · 工具 · 代理 · Key · 定时"
+            case .server: return "模型 · 工具 · 代理 · Key · 定时"
             case .about: return "版本 · 数据来源"
             }
         }
@@ -565,8 +566,10 @@ private struct ServerPages: View {
 
     var onOpen: (PanelPage) -> Void
 
+    /// 签到**不在这里**了：它属于「账号」这件事，入口挪到了
+    /// 账号页右上角的三个点里（点进去是同一套四栏页面）。
+    /// 这里有两条同样的入口，用户会不知道点哪个才是「真的」。
     private let pages: [(PanelPage, String, String, String)] = [
-        (.checkin, "签到", "自动签到 · 计划 · 记录", "checkmark.seal"),
         (.models, "模型管理", "清单 · 映射 · 元数据", "cpu"),
         (.tools, "工具服务", "服务 · 提供方 · 密钥", "wrench.and.screwdriver"),
         (.proxies, "网络代理", "代理 · 代理池 · 设置", "network"),
@@ -689,13 +692,6 @@ private struct ActionSettings: View {
             ) {
                 MonoButton(text: "同步面板", icon: "arrow.clockwise", style: .filled) {
                     Task { await model.refreshAll() }
-                }
-                MonoButton(
-                    text: model.checkinBusy == "all" ? "签到中…" : "立即签到",
-                    icon: "checkmark.seal",
-                    style: .tonal
-                ) {
-                    Task { await model.checkinAll() }
                 }
                 MonoButton(text: "刷新模型", icon: "cpu", style: .tonal) {
                     Task {
