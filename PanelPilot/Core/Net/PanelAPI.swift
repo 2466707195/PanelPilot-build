@@ -219,6 +219,38 @@ struct PanelAPI {
         _ path: String,
         body: [String: Any],
         timeout: TimeInterval = 90,
+        overallTimeout: TimeInterval? = nil,
+        onText: @escaping (String) -> Void,
+        onToolCalls: (([PanelToolCall]) -> Void)? = nil
+    ) async throws {
+        // 整体超时，而不只是「两段数据之间的空档」。
+        //
+        // ⚠️ 为什么必须有：`timeoutInterval` 管的是**空闲**时长。
+        // 网关若接受请求后一直发心跳/空行（或干脆不关连接），
+        // `bytes.lines` 会源源不断拿到行，空闲计时器永远不触发 ——
+        // 请求就永不结束，界面永远停在「正在思考」。
+        // 这就是「点了工具之后没有任何回复」的形态：带 tools 的那一轮被网关咽了，
+        // 既不出字也不报错，连接又不断。
+        let limit = overallTimeout ?? max(min(timeout * 2, 180), 30)
+        let deadline = Date().addingTimeInterval(limit)
+        try await streamChatBody(
+            path,
+            body: body,
+            timeout: timeout,
+            deadline: deadline,
+            limit: limit,
+            onText: onText,
+            onToolCalls: onToolCalls
+        )
+    }
+
+    /// 真正的读取循环（被上面的超时包装使用）
+    private func streamChatBody(
+        _ path: String,
+        body: [String: Any],
+        timeout: TimeInterval,
+        deadline: Date,
+        limit: TimeInterval,
         onText: @escaping (String) -> Void,
         onToolCalls: (([PanelToolCall]) -> Void)? = nil
     ) async throws {
@@ -274,6 +306,13 @@ struct PanelAPI {
         var produced = false
 
         for try await line in bytes.lines {
+            // 心跳也算「有数据」，所以只能按墙上时间判定，不能靠空闲超时
+            if Date() > deadline {
+                throw PanelAPIError.transport(
+                    "等了 \(Int(limit)) 秒还没有可用回复",
+                    "上游很可能不接受这组参数。把输入框的「工具」关掉再问一次，或换一个模型。"
+                )
+            }
             if raw.count < 2_000_000 {
                 raw.append(contentsOf: line.utf8)
                 raw.append(0x0A)

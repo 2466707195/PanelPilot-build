@@ -561,13 +561,22 @@ extension AppModel {
 
             // models：只收「启用中、且不是图片模型」的，跟面板前端同一个过滤条件
             var grouped: [String: [String]] = [:]
+            var noTools: Set<String> = []
             for row in JSONRows.from(response.json) {
                 guard let id = row.firstString(["id", "model", "name"]) else { continue }
                 if row.bool("enabled") == false { continue }
                 if let kind = row.firstString(["kind"]), kind == "image" { continue }
+                // 记下不支持 function calling 的：对着它们发 tools 会静默挂住。
+                // 两种写法都要认：`/v1/models` 用 snake_case，
+                // 插件缓存（`modelCatalogCache`）里是 camelCase 的 supportsToolCall。
+                let supports = row.bool("supports_tool_call") ?? row.bool("supportsToolCall")
+                if let supports, supports == false {
+                    noTools.insert(id)
+                }
                 let provider = row.firstString(["provider", "providerId"]) ?? "全部"
                 grouped[provider, default: []].append(id)
             }
+            modelsWithoutTools = noTools
             for key in grouped.keys {
                 grouped[key] = Array(Set(grouped[key] ?? [])).sorted()
             }

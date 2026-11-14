@@ -207,7 +207,16 @@ private struct AssistantPane: View {
                     Group {
                         if message.text.isEmpty {
                             // 空内容时不要只显示一个「…」：用户分不清是"在想"还是"死了"。
-                            ThinkingRow(startedAt: model.replyStartedAt ?? message.at)
+                            VStack(alignment: .leading, spacing: 6) {
+                                ThinkingRow(startedAt: model.replyStartedAt ?? message.at)
+                                if model.assistantToolsEnabled {
+                                    // 带着工具却不吐字，是这台网关的已知表现。提前说明，
+                                    // 免得用户对着省略号等 45 秒才知道要关工具。
+                                    Text("「工具」开着时部分模型会不返回内容，卡住就关掉再问")
+                                        .font(.system(size: 10.5))
+                                        .foregroundStyle(Aurora.muted)
+                                }
+                            }
                         } else {
                             MessageMarkdown(text: message.text)
                         }
@@ -293,6 +302,13 @@ private struct AssistantPane: View {
                         Text("工具")
                             .font(.system(size: 11.5, weight: .semibold))
                             .lineLimit(1)
+                        if model.assistantToolsEnabled, model.assistantModelSupportsTools == false {
+                            // 当前模型明确不支持工具：在开关上直接标出来，
+                            // 而不是让用户打开后对着空白等
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(Aurora.warning)
+                        }
                     }
                     .foregroundStyle(model.assistantToolsEnabled ? Aurora.brand : Aurora.inkSoft)
                     .padding(.horizontal, 9)
@@ -619,6 +635,9 @@ private struct ThinkingRow: View {
     private func text(_ seconds: Int) -> String {
         if seconds < 3 { return "正在思考…" }
         if seconds < 20 { return "正在思考… \(seconds)s" }
-        return "\(seconds)s · 上游有点慢，可以点右下角停止"
+        // 20 秒之后要给出可执行的动作，而不是干等：
+        // 工具开着的时候「上游不认 tools」是最常见的原因，直接把解法说出来。
+        if seconds < 45 { return "\(seconds)s · 上游有点慢，可以点右下角停止" }
+        return "\(seconds)s · 还没回复。若开着「工具」，先把它关掉再问一次"
     }
 }

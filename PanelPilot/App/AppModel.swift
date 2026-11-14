@@ -186,6 +186,21 @@ final class AppModel: ObservableObject {
     /// 提供商 id → 面板给的可读名字（`providerLabel`）。没有就退回 id 本身。
     @Published var agentProviderLabels: [String: String] = [:]
     @Published var agentModelsLoading = false
+    /// 不支持 function calling 的模型名。
+    ///
+    /// 面板的 `/api/models/manage` 里每条模型都有 `supports_tool_call`，
+    /// 而其中相当一部分是 `false`（这台面板上 179 个里就有 47 个）。
+    /// 对着这些模型发 `tools`，网关会「收下请求但不吐字」——
+    /// 用户看到的就是「点了工具就没反应」。
+    @Published var modelsWithoutTools: Set<String> = []
+
+    /// 当前选的模型是否支持工具调用。`nil` = 还没这份数据，不做判断。
+    var assistantModelSupportsTools: Bool? {
+        let name = assistantModel.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, !modelsWithoutTools.isEmpty else { return nil }
+        if modelsWithoutTools.contains(name) { return false }
+        return true
+    }
     /// 上一次成功拉取模型目录的时间。
     ///
     /// 之前这一页只要拉到过一次就**再也不刷新**（`if !agentModelsByProvider.isEmpty { return }`），
@@ -1741,16 +1756,35 @@ final class AppModel: ObservableObject {
     }
 
     /// 工具循环：发一轮 → 模型要调工具就执行 → 把结果塞回去 → 再发。
-    /// 最多四轮，防止模型自己绕圈。
+    ///
+    /// 这套东西有四种会「卡死」的方式，每一种都要有出口，否则用户看到的就是
+    /// 「点了工具就再也没有回复」：
+    ///
+    ///   1. **网关不认 `tools`，收下请求但不吐字也不报错。**
+    ///      （这台面板就是这么表现的。前端自己的实现也只传 `tools`、不传
+    ///      `tool_choice`，说明 `tool_choice` 并不是它们验证过的路径。）
+    ///   2. **回了但只回空内容**：`choices[0].delta.content` 一直是空串。
+    ///   3. **401 死循环**：令牌失效时 `round -= 1` 再 `continue`，`round` 永远是 1。
+    ///   4. **请求根本不结束**：网关持续发心跳，空闲超时永不触发
+    ///      —— 现在由 `streamChat` 的 `overallTimeout` 兜住。
+    ///
+    /// 对策：把「这一轮有没有产出」当成判据。带工具的那一轮什么都没产出来，
+    /// 就当作「工具不被支持」，自动去掉工具重问一次，并把原因写进气泡 + Toast。
+    /// 用户至少拿到答案，也知道为什么没看到工具卡片。
     private func runAgent(answerID: UUID, messages start: [[String: Any]]) async {
         var messages = start
         var round = 0
         /// 这一轮对话里工具被网关拒绝了；后续都走纯文本
         var toolsDisabledByFailure = false
+        /// 已经为 401 重登过一次，别无限重试
+        var didRelogin = false
+        /// 最多四轮工具循环，另加一次「去工具重试」
+        var extraRetries = 1
 
         while round < 4, !Task.isCancelled {
             round += 1
             var pending: [PanelToolCall] = []
+            var pieceCount = 0
 
             guard let api = makeAPI(timeout: 180, apiKeyOverride: assistantKeyValue) else {
                 finishReply(answerID, error: PanelAPIError.notConfigured)
@@ -1761,21 +1795,33 @@ final class AppModel: ObservableObject {
                 body["model"] = assistantModel.trimmingCharacters(in: .whitespaces)
             }
             // 工具是可选的：关掉时就是最普通的对话，任何网关都能回。
-            // 打开后如果这一轮直接失败（不支持 tools / 参数被拒），下一次自动去掉工具再试。
-            let withTools = assistantToolsEnabled && !toolsDisabledByFailure
+            //
+            // 还要额外排除「这个模型明确不支持 function calling」的情况：
+            // 面板自己有 `supports_tool_call` 字段，对着 false 的模型发 tools
+            // 就是「点了工具就没反应」的典型场景。这是本地已知事实，
+            // 不需要先发一次再把用户晾在那儿验证。
+            var withTools = assistantToolsEnabled && !toolsDisabledByFailure
+            if withTools, assistantModelSupportsTools == false {
+                withTools = false
+                toolsDisabledByFailure = true
+                noteToolFallback(reason: "当前模型不支持工具调用", disableSwitch: false)
+            }
             if withTools {
                 body["tools"] = AssistantToolCatalog.payload
-                body["tool_choice"] = "auto"
+                // 不传 `tool_choice`：面板自己的前端也不传，多一个字段就多一个
+                // 被网关拒掉的可能。`auto` 本来就是默认行为。
             }
 
             do {
                 try await api.streamChat(
                     "/api/assistant/chat",
                     body: body,
-                    // 带工具时网关若不支持 tools，常常是「接受请求然后不吐字」，
-                    // 等满 45 秒才降级太亏；22 秒没动静就退回纯文本重试。
+                    // 带工具时网关常常「接受请求然后不吐字」；22 秒没动静就退回纯文本。
                     timeout: withTools ? 22 : 45,
+                    // 整体上限：再慢也不让用户对着省略号干等
+                    overallTimeout: withTools ? 45 : 150,
                     onText: { piece in
+                        pieceCount += 1
                         Task { @MainActor [weak self] in
                             self?.enqueueAssistant(piece, to: answerID)
                         }
@@ -1786,23 +1832,43 @@ final class AppModel: ObservableObject {
                 )
             } catch {
                 let apiError = error as? PanelAPIError
-                if apiError?.isAuthFailure == true, round == 1 {
+
+                // 401：只重登一次。原来的写法是 `round -= 1; continue`，
+                // 重登失败时 round 永远是 1、401 永远成立 —— 死循环，界面一片空。
+                if apiError?.isAuthFailure == true, !didRelogin {
+                    didRelogin = true
                     _ = await loginIfNeeded(force: true)
                     round -= 1
                     continue
                 }
-                // 带工具时失败：立刻退回普通对话重试一轮，别让用户对着省略号等
-                if withTools {
+
+                // 带工具时失败：去掉工具立刻重试一轮，别让用户对着省略号等
+                if withTools, extraRetries > 0 {
+                    extraRetries -= 1
                     toolsDisabledByFailure = true
                     round -= 1
+                    noteToolFallback(reason: apiError?.errorDescription ?? error.localizedDescription)
                     continue
                 }
+
                 finishReply(answerID, error: error)
                 return
             }
 
             if Task.isCancelled { return }
-            guard !pending.isEmpty else { break }
+
+            // 没要求调工具 → 正常结束
+            if pending.isEmpty {
+                // 但如果这一轮带工具、而且一个字都没吐出来，那就是网关把 tools 咽了。
+                if withTools, pieceCount == 0, extraRetries > 0 {
+                    extraRetries -= 1
+                    toolsDisabledByFailure = true
+                    round -= 1
+                    noteToolFallback(reason: "网关没有返回内容")
+                    continue
+                }
+                break
+            }
 
             // 把「我要调这些工具」写回对话历史，模型下一轮才知道结果属于谁
             var assistantMessage: [String: Any] = ["role": "assistant", "content": ""]
@@ -1848,6 +1914,23 @@ final class AppModel: ObservableObject {
 
         finishReply(answerID, error: nil)
         await saveSession()
+    }
+
+    /// 工具被网关咽掉时的交代：关掉开关 + 告诉用户为什么。
+    ///
+    /// 静默降级是最糟的体验 —— 用户会以为「工具功能坏了」，而且下次还会再点一次。
+    /// - Parameter disableSwitch: 网关层面不吃 tools 时才关掉总开关。
+    ///   只是「这个模型不支持」的话保持开关状态 —— 用户换个支持的模型就又能用了，
+    ///   把开关关掉反而让他下次还得记得打开。
+    @MainActor
+    private func noteToolFallback(reason: String, disableSwitch: Bool = true) {
+        if disableSwitch { assistantToolsEnabled = false }
+        toast = Toast(
+            text: disableSwitch
+                ? "这个网关没有接受工具调用（\(reason)），已自动关掉「工具」并按普通对话重试"
+                : "当前模型不支持工具调用（\(reason)），这一轮按普通对话回答",
+            kind: .warning
+        )
     }
 
     // MARK: 工具执行
