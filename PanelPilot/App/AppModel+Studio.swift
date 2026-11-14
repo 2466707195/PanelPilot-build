@@ -146,6 +146,11 @@ extension AppModel {
             let response = try await authenticatedRequest("GET", "/api/accounts", timeout: 20)
             let items = AccountsParser.items(response.json)
             providers = AccountsParser.group(items)
+            // 服务端回了 needsRelogin 就以它为准：说「不用重登了」，
+            // 说明用户已经在网页里重新授权过，把上一轮记的失败清掉
+            for item in items where item.reloginKnown && !item.needsRelogin {
+                reloginHints[item.id] = nil
+            }
             currentAccountID = items.first(where: { $0.isCurrent })?.id ?? currentAccountID
             accountsUpdatedAt = Date()
             noteLocalCompute(items.count)
@@ -320,22 +325,43 @@ extension AppModel {
         }
     }
 
-    /// 单个账号签到：`POST /api/accounts/checkin {id}`
+    /// 刷新凭证：`POST /api/accounts/refresh {id}`
+    ///
+    /// 这个接口只做「续期」。上游把登录态废掉之后（刷新令牌过期/被撤销），
+    /// 它会回 `HTTP 502 · 凭证续期失败：…请重新登录该账号` —— 再点多少次都一样。
+    /// 所以失败时要：① 提示条只说人话；② **重拉列表**，让服务端算出的
+    /// `needsRelogin` / `needsReloginReason` 出现在详情页那张红卡里。
     func refreshAccountToken(_ id: String) async {
         do {
             _ = try await authenticatedRequest("POST", "/api/accounts/refresh", body: ["id": id], timeout: 60)
             toast = Toast(text: "凭证已刷新", kind: .success)
+            reloginHints[id] = nil
             // 刷新凭证最常见的产出就是「有效期 / 余额变了」，
             // 所以强制重拉列表 + 余额，不然界面停在旧数字上
             await loadAccounts(force: true)
             await refreshBalance(id: id)
         } catch {
             let apiError = error as? PanelAPIError
-            toast = Toast(
-                text: "刷新失败：\(apiError?.errorDescription ?? error.localizedDescription)",
-                kind: .error
-            )
+            let message = apiError?.errorDescription ?? error.localizedDescription
+            if Self.looksLikeAuthFailure(message) {
+                reloginHints[id] = message
+                toast = Toast(text: "登录态已失效，需要去面板重新授权", kind: .error)
+            } else {
+                toast = Toast(text: "刷新失败：\(message)", kind: .error)
+            }
+            // 让详情页拿到 needsRelogin + 原因（余额走 loadAccounts 里的静默刷新）
+            await loadAccounts(force: true)
         }
+    }
+
+    /// 上游「登录态失效」类错误的判别：这类错误重试没意义，得人重新授权。
+    static func looksLikeAuthFailure(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        let keys = [
+            "重新登录", "登录态", "登录授权", "刷新令牌", "refresh_token",
+            "invalid_grant", "unauthorized", "401", "已撤销", "已被上游拒绝"
+        ]
+        return keys.contains { lower.contains($0.lowercased()) }
     }
 }
 
@@ -678,6 +704,11 @@ extension AppModel {
         guard let profile = activeProfile else { return "" }
         let root = profile.rootString
         return root.hasSuffix("/v1") ? root : root + "/v1"
+    }
+
+    /// 面板网页根地址（不带 /v1）：账号重登这类操作只能去网页里做，需要它。
+    var panelRootURL: String {
+        activeProfile?.rootString ?? ""
     }
 
     /// 生成配置文本（纯本地，不发请求）。

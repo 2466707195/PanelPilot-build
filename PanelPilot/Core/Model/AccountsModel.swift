@@ -22,16 +22,29 @@ struct AccountItem: Identifiable, Equatable {
     var expiresAt: String?
     var modelCount: Int
     var raw: JSONValue
+    /// 面板发现「登录态已被上游拒绝、自动续期救不回来」时置真。
+    /// `/api/accounts` 里叫 `needsRelogin`，可能还带一句 `needsReloginReason`。
+    var needsRelogin: Bool = false
+    var needsReloginReason: String?
 
     var statusText: String {
+        // 重登是比 status 更高优先级的结论：服务端说凭证救不回来，
+        // 界面上再写「已启用」就是在骗人
+        if needsRelogin { return "需重新登录" }
         if let status, !status.isEmpty { return status }
         return enabled ? "已启用" : "已停用"
     }
 
     var healthy: Bool {
-        if !enabled { return false }
+        if !enabled || needsRelogin { return false }
         let lower = (status ?? "").lowercased()
-        return !["error", "fail", "invalid", "expired", "limit", "禁用", "限流"].contains { lower.contains($0) }
+        return !["error", "fail", "invalid", "expired", "limit", "禁用", "限流", "重登"].contains { lower.contains($0) }
+    }
+
+    /// 服务端这一版到底回没回 `needsRelogin` 字段。
+    /// 回了，`false` 才是「确实不用重登」；没回，`false` 只是默认值，不能当真。
+    var reloginKnown: Bool {
+        raw.value("needsRelogin") != nil || raw.value("needsReloginReason") != nil
     }
 
     /// 详情页要展示的「状态 / 代理 / 余额 / 有效期」四行。
@@ -105,7 +118,12 @@ enum AccountsParser {
                 balance: balance,
                 expiresAt: expires.map { shortDate($0) },
                 modelCount: (item.arr("models") ?? item.arr("modelList"))?.count ?? 0,
-                raw: item
+                raw: item,
+                needsRelogin: item.bool("needsRelogin")
+                    ?? item.bool("needs_relogin")
+                    ?? item.bool("reloginRequired")
+                    ?? false,
+                needsReloginReason: item.firstString(["needsReloginReason", "needs_relogin_reason", "reloginReason"])
             )
         }
     }

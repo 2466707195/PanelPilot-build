@@ -176,6 +176,12 @@ final class AppModel: ObservableObject {
     @Published var balanceBusyID: String?
     @Published var balancesLoading = false
     @Published var currentAccountID: String?
+    /// 账号 id → 「续期救不回来」的原话。
+    ///
+    /// 服务端会自己算 `needsRelogin`，但不是每个版本都会回这个字段；
+    /// 客户端把自己撞上的那次失败记下来，详情页立刻就能给出红卡，
+    /// 不用等下一次 `/api/accounts` 刷新。
+    @Published var reloginHints: [String: String] = [:]
 
     // MARK: - 助手输入框
 

@@ -238,6 +238,9 @@ struct AccountsScreen: View {
                         if account.isCurrent {
                             StudioTag(text: "当前", tint: Aurora.brand)
                         }
+                        if needsRelogin(account) {
+                            StudioTag(text: "需重登", tint: Aurora.danger)
+                        }
                     }
                     Text(subtitle(account))
                         .font(.system(size: 11.5))
@@ -250,7 +253,7 @@ struct AccountsScreen: View {
                 Spacer(minLength: 4)
 
                 Circle()
-                    .fill(account.healthy ? Aurora.success : Aurora.rose)
+                    .fill(account.healthy && !needsRelogin(account) ? Aurora.success : Aurora.rose)
                     .frame(width: 6, height: 6)
 
                 Image(systemName: "chevron.right")
@@ -268,8 +271,13 @@ struct AccountsScreen: View {
         return String(label.prefix(1)).uppercased()
     }
 
+    /// 行内的「需重登」判断：服务端标记，或客户端自己撞上的那次失败。
+    private func needsRelogin(_ account: AccountItem) -> Bool {
+        account.needsRelogin || !(model.reloginHints[account.id] ?? "").isEmpty
+    }
+
     private func subtitle(_ account: AccountItem) -> String {
-        var parts: [String] = [account.statusText]
+        var parts: [String] = [needsRelogin(account) ? "需重新登录" : account.statusText]
         if let balance = balanceText(account) { parts.append("余额 \(balance)") }
         if let expires = account.expiresAt { parts.append("到期 \(expires)") }
         if let proxy = account.proxy { parts.append(proxy) }
@@ -297,6 +305,7 @@ struct AccountDetailSheet: View {
 
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
 
     let account: AccountItem
 
@@ -311,7 +320,9 @@ struct AccountDetailSheet: View {
     /// 一句话总结：把最要紧的几件事按人话拼起来
     private var summary: String {
         var parts: [String] = []
-        if !live.enabled {
+        if needsRelogin {
+            parts.append("登录态已失效，刷新凭证救不回来，需要在面板网页重新授权")
+        } else if !live.enabled {
             parts.append("这个账号已停用，不参与路由")
         } else if live.healthy {
             parts.append("账号可用，正在参与路由")
@@ -351,7 +362,7 @@ struct AccountDetailSheet: View {
 
     private var rows: [(String, String)] {
         var rows: [(String, String)] = []
-        rows.append(("状态", live.statusText))
+        rows.append(("状态", needsRelogin ? "需重新登录" : live.statusText))
         if let proxyText { rows.append(("代理方式", proxyText)) }
         if let balance = live.balance, !balance.isEmpty {
             rows.append(("余额", balance))
@@ -394,6 +405,7 @@ struct AccountDetailSheet: View {
                 VStack(alignment: .leading, spacing: 14) {
                     header
                     summaryCard
+                    if needsRelogin { reloginCard }
                     detailCard
                     actions
                 }
@@ -413,7 +425,9 @@ struct AccountDetailSheet: View {
                 // 列表里的余额来自「快照」（可能好几分钟前），详情页显示旧数字
                 // 正是「余额不刷新」的观感来源之一。
                 if model.checkin == nil { await model.loadCheckin() }
-                await model.refreshBalance(id: live.id)
+                // 登录态已经被上游废掉了就别再打一次上游：只会再崩一次，
+                // 还顺手弹一条失败提示。余额继续显示快照里的旧数字。
+                if !needsRelogin { await model.refreshBalance(id: live.id) }
             }
         }
     }
@@ -464,6 +478,75 @@ struct AccountDetailSheet: View {
             RoundedRectangle(cornerRadius: AuroraMetrics.cardRadius, style: .continuous)
                 .fill(Aurora.surface)
         )
+    }
+
+    /// 需不需要重登：服务端的标记优先，其次看客户端这次撞上的失败原话。
+    private var reloginReason: String? {
+        if let reason = live.needsReloginReason, !reason.isEmpty { return reason }
+        if let hint = model.reloginHints[live.id], !hint.isEmpty { return hint }
+        return nil
+    }
+
+    private var needsRelogin: Bool { live.needsRelogin || reloginReason != nil }
+
+    /// 需要重新登录：上游把登录态废了，`/api/accounts/refresh` 只能续期，救不回来。
+    /// 这块必须直说 —— 否则用户会一遍遍点「刷新凭证」，每次都吃 502。
+    private var reloginCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(Aurora.danger)
+                Text("这个账号需要重新登录")
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundStyle(Aurora.ink)
+            }
+
+            Text(reloginReason ?? "登录授权已失效，自动续期无法恢复已过期或已撤销的刷新令牌。")
+                .font(.system(size: 12.5))
+                .foregroundStyle(Aurora.inkSoft)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("要去面板网页里重新授权：账号 → 该提供商 → 重新登录。手机上的「刷新凭证」只能续期，救不回被撤销的登录态。")
+                .font(.system(size: 11.5))
+                .foregroundStyle(Aurora.muted)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button {
+                openPanelWeb()
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "safari")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("打开面板网页")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .foregroundStyle(Aurora.danger)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 6)
+                .background(Capsule().fill(Aurora.danger.opacity(0.10)))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: AuroraMetrics.cardRadius, style: .continuous)
+                .fill(Aurora.surface)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: AuroraMetrics.cardRadius, style: .continuous)
+                .stroke(Aurora.danger.opacity(0.22), lineWidth: 1)
+        )
+    }
+
+    private func openPanelWeb() {
+        let raw = model.panelRootURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty, let url = URL(string: raw) else {
+            model.toast = Toast(text: "还没有配置面板地址", kind: .warning)
+            return
+        }
+        openURL(url)
     }
 
     private var detailCard: some View {
@@ -543,9 +626,20 @@ struct AccountDetailSheet: View {
                     await model.checkinAccount(live.id)
                 }
             },
-            GlassActionSpec(title: "刷新凭证", icon: "arrow.clockwise", busy: busyKey == "刷新凭证") {
-                run("刷新凭证", "正在刷新凭证…") {
-                    await model.refreshAccountToken(live.id)
+            // 登录态已经被上游废掉时，「刷新凭证」按多少次都只会再吃一次 502，
+            // 所以这个按钮在这种账号上直接变成「重新授权」——点了去面板网页
+            GlassActionSpec(
+                title: needsRelogin ? "重新授权" : "刷新凭证",
+                icon: needsRelogin ? "safari" : "arrow.clockwise",
+                tint: needsRelogin ? Aurora.danger : Aurora.ink,
+                busy: busyKey == "刷新凭证"
+            ) {
+                if needsRelogin {
+                    openPanelWeb()
+                } else {
+                    run("刷新凭证", "正在刷新凭证…") {
+                        await model.refreshAccountToken(live.id)
+                    }
                 }
             },
             GlassActionSpec(
