@@ -23,12 +23,22 @@ import SwiftUI
 /// 一行里的一个动作。
 struct GlassActionSpec: Identifiable {
 
-    let id = UUID()
+    /// ⚠️ **不要用 `let id = UUID()`**。
+    ///
+    /// 这些 spec 是在 `body` 里的 computed property 现算的，每次重绘都会新建一批。
+    /// 用随机 UUID 的话，每次重绘 `ForEach` 都会认为「四个按钮全换了人」，
+    /// 把它们整个销毁重建 —— 恰好按下的那一刻赶上任何状态变化（触感、横幅、
+    /// 刷新中的圈圈），这次点击就被丢掉了。用户看到的就是「点了没反应」。
+    /// 用 title 当 id：同一个按钮永远是同一个 id，视图对象不会被换掉。
+    var id: String { title }
     var title: String
     var icon: String
     /// 文字与图标的颜色。玻璃底不带色，颜色只在字上。
     var tint: Color = Aurora.ink
     var enabled: Bool = true
+    /// 这个按钮正在执行（图标换成转圈）。比「整行禁用」更精确：
+    /// 用户能看出是哪一个在跑，而不是觉得四个都坏了。
+    var busy: Bool = false
     var action: () -> Void
 }
 
@@ -83,7 +93,9 @@ struct GlassActionButton: View {
 
     private func label(showIcon: Bool) -> some View {
         HStack(spacing: 5) {
-            if showIcon {
+            if spec.busy {
+                ProgressView().controlSize(.mini)
+            } else if showIcon {
                 Image(systemName: spec.icon)
                     .font(.system(size: 12.5, weight: .semibold))
             }

@@ -63,8 +63,11 @@ extension AppModel {
             let summary = CheckinParser.summaryText(response.json)
             toast = Toast(text: "签到完成：\(summary)", kind: summary.contains("失败 0") || !summary.contains("失败") ? .success : .warning)
             haptic(.medium)
+            // 签到会改变「今日签到」这一行和余额（签到常有奖励），
+            // 两个都要 force，否则详情页停在旧状态
             await loadCheckin(force: true)
             await loadAccounts(force: true)
+            if let id { await refreshBalance(id: id) }
         } catch {
             let apiError = error as? PanelAPIError
             toast = Toast(

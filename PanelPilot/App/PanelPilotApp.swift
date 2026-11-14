@@ -28,6 +28,42 @@ struct RootView: View {
     @State private var appliedStart = false
 
     var body: some View {
+        ZStack(alignment: .top) {
+            tabView
+            // 全局提示条。
+            //
+            // ⚠️ 这一行在 2.6.0 重写底栏时被误删了，`ToastOverlay` 的 **struct 还在、
+            // 调用没了** —— 于是从 2.6.0 起所有 `toast = Toast(...)` 都不会显示。
+            // 表现就是「点按钮没反应」：动作其实执行了，但成功/失败都没人告诉用户。
+            // 靠它来显示「已切换当前账号 / 凭证已刷新 / 签到完成」，所以必须挂回来。
+            ToastOverlay()
+                .allowsHitTesting(false)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openConnectionSettings)) { _ in
+            tab = .settings
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openRoutingTab)) { _ in
+            model.haptic()
+            tab = .routing
+        }
+        .onChange(of: tab) { _ in model.haptic() }
+        .onChange(of: scenePhase) { phase in
+            if phase == .active {
+                model.handleBecameActive()
+            } else if phase == .background {
+                // 落盘已经改成后台合并写（0.35 秒一次），进后台前把最后一批写完，
+                // 免得刚同步完就切走、结果快照没留下。
+                LocalVault.shared.flushNow()
+            }
+        }
+        .onAppear {
+            guard !appliedStart else { return }
+            appliedStart = true
+            if let start = PanelTab(rawValue: model.startTab) { tab = start }
+        }
+    }
+
+    private var tabView: some View {
         TabView(selection: $tab) {
             OverviewScreen()
                 .tabItem { Label("概览", systemImage: "square.grid.2x2") }
@@ -52,28 +88,6 @@ struct RootView: View {
         // 底栏交给系统：iOS 26+ 自动是 Liquid Glass + 系统的选中指示（会自己放大/滑动），
         // 选中态固定近黑，未选中交给系统灰。不要自绘、不要给底栏设背景。
         .tint(Aurora.ink)
-        .onReceive(NotificationCenter.default.publisher(for: .openConnectionSettings)) { _ in
-            tab = .settings
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .openRoutingTab)) { _ in
-            model.haptic()
-            tab = .routing
-        }
-        .onChange(of: tab) { _ in model.haptic() }
-        .onChange(of: scenePhase) { phase in
-            if phase == .active {
-                model.handleBecameActive()
-            } else if phase == .background {
-                // 落盘已经改成后台合并写（0.35 秒一次），进后台前把最后一批写完，
-                // 免得刚同步完就切走、结果快照没留下。
-                LocalVault.shared.flushNow()
-            }
-        }
-        .onAppear {
-            guard !appliedStart else { return }
-            appliedStart = true
-            if let start = PanelTab(rawValue: model.startTab) { tab = start }
-        }
     }
 }
 

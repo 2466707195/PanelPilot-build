@@ -299,6 +299,11 @@ struct AccountDetailSheet: View {
 
     let account: AccountItem
 
+    /// 正在执行的动作说明（空 = 空闲）。用来给按钮区显示「正在签到…」并禁用按钮。
+    @State private var busyAction: String?
+    /// 哪个按钮在跑（用来只在那一个上显示转圈）
+    @State private var busyKey: String?
+
     private var live: AccountItem { model.account(with: account.id) ?? account }
     private var checkin: CheckinAccount? { model.checkin?.account(id: account.id) }
 
@@ -377,7 +382,11 @@ struct AccountDetailSheet: View {
                 }
             }
             .task {
+                // 三个都拉，而且**这一个账号的余额要实时查一次**：
+                // 列表里的余额来自「快照」（可能好几分钟前），详情页显示旧数字
+                // 正是「余额不刷新」的观感来源之一。
                 if model.checkin == nil { await model.loadCheckin() }
+                await model.refreshBalance(id: live.id)
             }
         }
     }
@@ -465,8 +474,26 @@ struct AccountDetailSheet: View {
     ///
     /// 「设为当前」在已经是当前账号时不出现 —— 但那样按钮数量会 4→3 变化、
     /// 宽度跟着跳。所以这里改成「出现但禁用」，宽度纹丝不动。
+    /// 有动作正在跑：这一行按钮整体置忙（转圈 + 不可点）。
+    ///
+    /// 之前完全没有忙碌态：点完立刻 dismiss 或者什么都不显示，
+    /// 看起来就跟「点了没反应」一模一样。
     private var actions: some View {
-        GlassActionRow(items: actionItems)
+        VStack(spacing: 8) {
+            GlassActionRow(items: actionItems)
+                .disabled(busyAction != nil)
+
+            if let busyAction {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text(busyAction)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Aurora.muted)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .transition(.opacity)
+            }
+        }
     }
 
     private var actionItems: [GlassActionSpec] {
@@ -475,29 +502,51 @@ struct AccountDetailSheet: View {
                 title: "设为当前",
                 icon: "arrow.right.circle",
                 tint: live.isCurrent ? Aurora.muted : Aurora.brand,
-                enabled: !live.isCurrent
+                enabled: !live.isCurrent,
+                busy: busyKey == "设为当前"
             ) {
-                Task {
+                // 不急着 dismiss：先让用户看到「已完成」的提示条，
+                // 否则点完窗口直接关掉，什么都来不及看。
+                run("设为当前", "正在切换当前账号…") {
                     await model.setCurrentAccount(live.id)
-                    dismiss()
                 }
             },
-            GlassActionSpec(title: "签到", icon: "checkmark.seal") {
-                Task { await model.checkinAccount(live.id) }
+            GlassActionSpec(title: "签到", icon: "checkmark.seal", busy: busyKey == "签到") {
+                run("签到", "正在签到…") {
+                    await model.checkinAccount(live.id)
+                }
             },
-            GlassActionSpec(title: "刷新凭证", icon: "arrow.clockwise") {
-                Task { await model.refreshAccountToken(live.id) }
+            GlassActionSpec(title: "刷新凭证", icon: "arrow.clockwise", busy: busyKey == "刷新凭证") {
+                run("刷新凭证", "正在刷新凭证…") {
+                    await model.refreshAccountToken(live.id)
+                }
             },
             GlassActionSpec(
                 title: live.enabled ? "停用" : "启用",
                 icon: live.enabled ? "pause.circle" : "play.circle",
-                tint: live.enabled ? Aurora.danger : Aurora.ink
+                tint: live.enabled ? Aurora.danger : Aurora.ink,
+                busy: busyKey == (live.enabled ? "停用" : "启用")
             ) {
-                Task {
+                run(live.enabled ? "停用" : "启用", "正在\(live.enabled ? "停用" : "启用")…") {
                     await model.setAccountEnabled(live, enabled: !live.enabled)
-                    dismiss()
                 }
             }
         ]
+    }
+
+    /// 统一的动作包装：置忙 → 执行 → 收忙。**不主动关闭弹层**。
+    ///
+    /// 原来「设为当前 / 停用」成功后立刻 `dismiss()`，等于用户还没看清结果
+    /// 页面就没了；而「签到 / 刷新凭证」又完全不关，也没任何进度。
+    /// 现在一律留在页面上，靠顶部提示条 + 按钮区的进度文字给反馈，
+    /// 用户自己决定什么时候关。
+    private func run(_ key: String, _ label: String, work: @escaping () async -> Void) {
+        busyKey = key
+        busyAction = label
+        Task {
+            await work()
+            busyKey = nil
+            busyAction = nil
+        }
     }
 }

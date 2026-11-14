@@ -111,7 +111,7 @@ extension AppModel {
             )
             toast = Toast(text: enabled ? "已启用「\(name)」" : "已停用「\(name)」", kind: .success)
             haptic()
-            await loadAccounts()
+            await loadAccounts(force: true)
         } catch {
             let apiError = error as? PanelAPIError
             toast = Toast(
@@ -127,9 +127,19 @@ extension AppModel {
 extension AppModel {
 
     /// 读账号并本地按提供商分组。
+    ///
+    /// `force` 原来**收下了但没用到**（函数体里没有一次读它），
+    /// 于是「下拉刷新」「点重试」和「切页时的自动加载」效果完全一样。
+    /// 现在 force 会跳过「正在加载就返回」的短路，并把余额一起重拉。
     func loadAccounts(force: Bool = false) async {
         guard activeProfile?.isValid == true else { return }
-        if accountsLoading { return }
+        // force 时不走短路：否则手动刷新会被一次后台加载挡住，什么都不发生
+        if accountsLoading, !force { return }
+        if !force, !providers.isEmpty,
+           let at = accountsUpdatedAt,
+           Date().timeIntervalSince(at) < 20 {
+            return
+        }
         accountsLoading = true
         accountsError = nil
         do {
@@ -144,6 +154,12 @@ extension AppModel {
             accountsError = apiError?.errorDescription ?? error.localizedDescription
         }
         accountsLoading = false
+        // 账号列表更新后，余额与签到状态也一并重拉：
+        // 只刷列表不刷余额，就会出现「状态变了、余额还是旧的」这种半新半旧的样子。
+        if force {
+            await loadBalancesQuietly(force: true)
+            if checkin != nil { await loadCheckin(force: true) }
+        }
     }
 
     var allAccounts: [AccountItem] { providers.flatMap(\.accounts) }
@@ -269,7 +285,9 @@ extension AppModel {
             _ = try await authenticatedRequest("POST", "/api/accounts/current", body: ["id": id], timeout: 30)
             toast = Toast(text: "已切换当前账号", kind: .success)
             haptic(.medium)
-            await loadAccounts()
+            // 必须 force：不带 force 会被「20 秒内已加载过」直接短路，
+            // 界面上看不出任何变化（当前账号的勾还在原来的位置）
+            await loadAccounts(force: true)
         } catch {
             let apiError = error as? PanelAPIError
             toast = Toast(
@@ -284,7 +302,10 @@ extension AppModel {
         do {
             _ = try await authenticatedRequest("POST", "/api/accounts/refresh", body: ["id": id], timeout: 60)
             toast = Toast(text: "凭证已刷新", kind: .success)
-            await loadAccounts()
+            // 刷新凭证最常见的产出就是「有效期 / 余额变了」，
+            // 所以强制重拉列表 + 余额，不然界面停在旧数字上
+            await loadAccounts(force: true)
+            await refreshBalance(id: id)
         } catch {
             let apiError = error as? PanelAPIError
             toast = Toast(
