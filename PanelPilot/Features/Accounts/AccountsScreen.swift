@@ -456,32 +456,48 @@ struct AccountDetailSheet: View {
         )
     }
 
+    /// 四个平行动作，**一行、等宽、同尺寸**。
+    ///
+    /// 原来用的是 `WrapLayout + MonoButton`：会换行（iPhone 上「刷新凭证 / 停用」
+    /// 掉到第二行），而且宽度跟着文字长度走（「签到」比「刷新凭证」窄一截）。
+    /// 一排里还混了三种底色（品牌蓝 / 浅灰 / 红字）。现在统一成透明玻璃胶囊，
+    /// 层级只靠文字颜色区分。
+    ///
+    /// 「设为当前」在已经是当前账号时不出现 —— 但那样按钮数量会 4→3 变化、
+    /// 宽度跟着跳。所以这里改成「出现但禁用」，宽度纹丝不动。
     private var actions: some View {
-        WrapLayout(spacing: 8, lineSpacing: 8) {
-            if !live.isCurrent {
-                MonoButton(text: "设为当前", icon: "arrow.right.circle", style: .filled) {
-                    Task {
-                        await model.setCurrentAccount(live.id)
-                        dismiss()
-                    }
+        GlassActionRow(items: actionItems)
+    }
+
+    private var actionItems: [GlassActionSpec] {
+        [
+            GlassActionSpec(
+                title: "设为当前",
+                icon: "arrow.right.circle",
+                tint: live.isCurrent ? Aurora.muted : Aurora.brand,
+                enabled: !live.isCurrent
+            ) {
+                Task {
+                    await model.setCurrentAccount(live.id)
+                    dismiss()
                 }
-            }
-            MonoButton(text: "签到", icon: "checkmark.seal", style: .tonal) {
+            },
+            GlassActionSpec(title: "签到", icon: "checkmark.seal") {
                 Task { await model.checkinAccount(live.id) }
-            }
-            MonoButton(text: "刷新凭证", icon: "arrow.clockwise", style: .tonal) {
+            },
+            GlassActionSpec(title: "刷新凭证", icon: "arrow.clockwise") {
                 Task { await model.refreshAccountToken(live.id) }
-            }
-            MonoButton(
-                text: live.enabled ? "停用" : "启用",
+            },
+            GlassActionSpec(
+                title: live.enabled ? "停用" : "启用",
                 icon: live.enabled ? "pause.circle" : "play.circle",
-                style: live.enabled ? .danger : .tonal
+                tint: live.enabled ? Aurora.danger : Aurora.ink
             ) {
                 Task {
                     await model.setAccountEnabled(live, enabled: !live.enabled)
                     dismiss()
                 }
             }
-        }
+        ]
     }
 }
